@@ -1,9 +1,10 @@
 use ipnet::IpNet;
+use once_cell::sync::Lazy;
 use std::net::IpAddr;
 use std::str::FromStr;
-use once_cell::sync::Lazy;
 
-pub static CF_NETWORKS: Lazy<Vec<IpNet>> = Lazy::new(|| {
+// Separate IPv4 and IPv6 networks for faster lookup
+pub static CF_IPV4_NETWORKS: Lazy<Vec<IpNet>> = Lazy::new(|| {
     vec![
         IpNet::from_str("103.21.244.0/22").unwrap(),
         IpNet::from_str("103.22.200.0/22").unwrap(),
@@ -20,6 +21,11 @@ pub static CF_NETWORKS: Lazy<Vec<IpNet>> = Lazy::new(|| {
         IpNet::from_str("190.93.240.0/20").unwrap(),
         IpNet::from_str("197.234.240.0/22").unwrap(),
         IpNet::from_str("198.41.128.0/17").unwrap(),
+    ]
+});
+
+pub static CF_IPV6_NETWORKS: Lazy<Vec<IpNet>> = Lazy::new(|| {
+    vec![
         IpNet::from_str("2400:cb00::/32").unwrap(),
         IpNet::from_str("2606:4700::/32").unwrap(),
         IpNet::from_str("2803:f800::/32").unwrap(),
@@ -30,10 +36,26 @@ pub static CF_NETWORKS: Lazy<Vec<IpNet>> = Lazy::new(|| {
     ]
 });
 
+pub static CF_NETWORKS: Lazy<Vec<IpNet>> = Lazy::new(|| {
+    let mut networks = Vec::new();
+    networks.extend(CF_IPV4_NETWORKS.clone());
+    networks.extend(CF_IPV6_NETWORKS.clone());
+    networks
+});
+
 pub fn is_cloudflare_ip(ip: &str) -> bool {
-    if let Ok(addr) = IpAddr::from_str(ip) {
-        CF_NETWORKS.iter().any(|network| network.contains(&addr))
-    } else {
-        false
+    match IpAddr::from_str(ip) {
+        Ok(addr) => {
+            // Check appropriate network list based on IP version
+            match addr {
+                IpAddr::V4(_) => CF_IPV4_NETWORKS
+                    .iter()
+                    .any(|network| network.contains(&addr)),
+                IpAddr::V6(_) => CF_IPV6_NETWORKS
+                    .iter()
+                    .any(|network| network.contains(&addr)),
+            }
+        }
+        Err(_) => false,
     }
 }
