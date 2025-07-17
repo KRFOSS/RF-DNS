@@ -34,19 +34,6 @@ pub const ROOT_DNS_SERVERS: &[&str] = &[
     "9.9.9.9",
     "208.67.222.222",
     "149.112.112.112",
-    "198.41.0.4",     // A.ROOT-SERVERS.NET
-    "170.247.170.2",  // B.ROOT-SERVERS.NET
-    "192.33.4.12",    // C.ROOT-SERVERS.NET
-    "199.7.91.13",    // D.ROOT-SERVERS.NET
-    "192.203.230.10", // E.ROOT-SERVERS.NET
-    "192.5.5.241",    // F.ROOT-SERVERS.NET
-    "192.112.36.4",   // G.ROOT-SERVERS.NET
-    "198.97.190.53",  // H.ROOT-SERVERS.NET
-    "192.36.148.17",  // I.ROOT-SERVERS.NET
-    "192.58.128.30",  // J.ROOT-SERVERS.NET
-    "193.0.14.129",   // K.ROOT-SERVERS.NET
-    "199.7.83.42",    // L.ROOT-SERVERS.NET
-    "202.12.27.33",   // M.ROOT-SERVERS.NET
 ];
 
 // 우회 도메인 목록

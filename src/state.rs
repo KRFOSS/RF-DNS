@@ -2,7 +2,7 @@ use crate::cache::DnsCache;
 use crate::config::*;
 use crate::errors::*;
 use crate::metrics::{Metrics, Protocol, ResponseTimer};
-use crate::resolver::RecursiveDnsResolver;
+use crate::resolver::DnsResolver;
 use crate::utils::*;
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::{Name, RecordType};
@@ -13,14 +13,14 @@ use tracing::{debug, error, info, warn};
 #[derive(Clone)]
 pub struct AppState {
     pub cache: Arc<DnsCache>,
-    pub resolver: Arc<RecursiveDnsResolver>,
+    pub resolver: Arc<DnsResolver>,
     pub metrics: Arc<Metrics>,
 }
 
 impl AppState {
     pub fn new() -> DnsResult<Self> {
         let cache = Arc::new(DnsCache::new());
-        let resolver = Arc::new(RecursiveDnsResolver::new()?);
+        let resolver = Arc::new(DnsResolver::new()?);
         let metrics = Arc::new(Metrics::new());
 
         // 백그라운드 작업 시작
