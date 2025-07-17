@@ -1,385 +1,255 @@
-mod app;
 mod cache;
-mod cloudflare;
-mod dns_server;
-mod dns_utils;
+mod config;
+mod doh;
+mod doq;
 mod dot;
-mod recursive_dns;
+mod errors;
+mod metrics;
+mod resolver;
+mod servers;
+mod state;
+mod utils;
 
-use axum::{
-    Router,
-    extract::{Path, Query},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Redirect, Response},
-    routing::{delete, get},
-};
-use axum_server::tls_rustls::RustlsConfig;
-use base64::Engine;
 use clap::Parser;
-use std::collections::HashMap;
-use tower_http::cors::CorsLayer;
+use config::*;
+use daemonize::Daemonize;
+use doh::run_doh_server;
+use doq::run_doq_server;
+use dot::run_dot_server;
+use errors::DnsResult;
+use servers::{run_tcp_server, run_udp_server};
+use state::AppState;
 use tracing::info;
-
-pub use app::*;
-pub use cache::*;
-pub use cloudflare::*;
-pub use dns_server::*;
-pub use dns_utils::*;
-pub use dot::*;
-pub use recursive_dns::*;
+use utils::setup_logging;
 
 #[derive(Parser)]
 #[command(name = "rfdns")]
-#[command(about = "A DNS server with DNS over HTTPS (DoH) and DNS over TLS (DoT) support")]
+#[command(about = "A high-performance DNS server with DoH and DoT support")]
 struct Args {
-    /// Path to TLS certificate file for DNS over TLS
+    /// Path to TLS certificate file
     #[arg(long, help = "Path to TLS certificate file (.pem or .crt)")]
     cert: Option<String>,
 
-    /// Path to TLS private key file for DNS over TLS
+    /// Path to TLS private key file
     #[arg(long, help = "Path to TLS private key file (.pem or .key)")]
     key: Option<String>,
 
     /// DoH server port
-    #[arg(long, default_value = "443", help = "Port for DNS over HTTPS server")]
+    #[arg(long, default_value_t = DOH_PORT, help = "Port for DNS over HTTPS server")]
     doh_port: u16,
 
     /// DoT server port
-    #[arg(long, default_value = "853", help = "Port for DNS over TLS server")]
+    #[arg(long, default_value_t = DOT_PORT, help = "Port for DNS over TLS server")]
     dot_port: u16,
 
+    /// DoQ server port
+    #[arg(long, default_value_t = DOQ_PORT, help = "Port for DNS over QUIC server")]
+    doq_port: u16,
+
     /// Plain DNS server port
-    #[arg(long, default_value = "53", help = "Port for plain DNS server")]
+    #[arg(long, default_value_t = DNS_PORT, help = "Port for plain DNS server")]
     dns_port: u16,
+
+    /// TCP DNS server port
+    #[arg(long, default_value_t = 5353, help = "Port for TCP DNS server")]
+    tcp_port: u16,
+
+    /// Enable UDP DNS server
+    #[arg(long, default_value_t = true, help = "Enable UDP DNS server")]
+    enable_udp: bool,
+
+    /// Enable TCP DNS server
+    #[arg(long, default_value_t = true, help = "Enable TCP DNS server")]
+    enable_tcp: bool,
+
+    /// Enable DoH server
+    #[arg(long, default_value_t = true, help = "Enable DNS over HTTPS server")]
+    enable_doh: bool,
+
+    /// Enable DoT server
+    #[arg(long, default_value_t = true, help = "Enable DNS over TLS server")]
+    enable_dot: bool,
+
+    /// Enable DoQ server
+    #[arg(long, default_value_t = true, help = "Enable DNS over QUIC server")]
+    enable_doq: bool,
+
+    /// Run as daemon
+    #[arg(long, help = "Run as daemon in background")]
+    daemon: bool,
+
+    /// PID file path (only used with --daemon)
+    #[arg(long, help = "Path to PID file when running as daemon")]
+    pid_file: Option<String>,
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> DnsResult<()> {
     let args = Args::parse();
 
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
+    // 데몬 모드 설정
+    if args.daemon {
+        let pid_file = args.pid_file.as_deref().unwrap_or("/var/run/rfdns.pid");
 
-    let state = DnsState::new();
-    let app = create_app(state.clone());
+        let daemonize = Daemonize::new()
+            .pid_file(pid_file)
+            .chown_pid_file(true)
+            .working_directory("/tmp")
+            .user("nobody")
+            .group("daemon")
+            .umask(0o027);
 
-    // Start plain DNS server in background
-    let dns_server = tokio::spawn(run_dns_server(state.clone(), args.dns_port));
+        match daemonize.start() {
+            Ok(_) => {
+                // 데몬 모드에서는 로깅을 다시 설정해야 함
+                setup_logging();
+                info!("🔄 Successfully daemonized with PID file: {}", pid_file);
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to daemonize: {}", e);
+                return Err(errors::DnsError::ConfigurationError(format!(
+                    "Failed to daemonize: {}",
+                    e
+                )));
+            }
+        }
+    } else {
+        // 로깅 설정
+        setup_logging();
+    }
 
-    // Start DoT server in background
-    let dot_server = tokio::spawn(run_dot_server(
-        state.clone(),
-        args.dot_port,
-        args.cert.clone(),
-        args.key.clone(),
-    ));
+    // 기본 크립토 프로바이더 설치
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| {
+            errors::DnsError::ConfigurationError(
+                "Failed to install default crypto provider".to_string(),
+            )
+        })?;
 
-    // Start DoH server (HTTPS)
-    let doh_server = tokio::spawn(run_doh_server(
-        state,
-        args.doh_port,
-        args.cert,
-        args.key,
-        app,
-    ));
+    // 애플리케이션 상태 초기화
+    let state = AppState::new()?;
 
-    info!("DoH Server running on https://0.0.0.0:{}", args.doh_port);
-    info!("DoT Server running on 0.0.0.0:{}", args.dot_port);
-    info!("Plain DNS Server running on 0.0.0.0:{}", args.dns_port);
+    info!("🚀 rfdns v{} starting...", env!("CARGO_PKG_VERSION"));
+    info!("🔧 Configuration loaded successfully");
 
-    // Wait for all servers
+    // 서버 태스크들
+    let mut tasks = Vec::new();
+
+    // UDP DNS 서버
+    if args.enable_udp {
+        let udp_state = state.clone();
+        let udp_port = args.dns_port;
+        let udp_task = tokio::spawn(async move {
+            if let Err(e) = run_udp_server(udp_state, udp_port).await {
+                eprintln!("❌ UDP DNS server error: {}", e);
+            }
+        });
+        tasks.push(udp_task);
+        info!("📡 UDP DNS server will start on port {}", args.dns_port);
+    }
+
+    // TCP DNS 서버
+    if args.enable_tcp {
+        let tcp_state = state.clone();
+        let tcp_port = args.tcp_port;
+        let tcp_task = tokio::spawn(async move {
+            if let Err(e) = run_tcp_server(tcp_state, tcp_port).await {
+                eprintln!("❌ TCP DNS server error: {}", e);
+            }
+        });
+        tasks.push(tcp_task);
+        info!("📡 TCP DNS server will start on port {}", args.tcp_port);
+    }
+
+    // DoT 서버
+    if args.enable_dot {
+        let dot_state = state.clone();
+        let dot_port = args.dot_port;
+        let cert_for_dot = args.cert.clone();
+        let key_for_dot = args.key.clone();
+        let dot_task = tokio::spawn(async move {
+            if let Err(e) = run_dot_server(dot_state, dot_port, cert_for_dot, key_for_dot).await {
+                eprintln!("❌ DoT server error: {}", e);
+            }
+        });
+        tasks.push(dot_task);
+        info!("🔐 DoT server will start on port {}", args.dot_port);
+    }
+
+    // DoQ 서버
+    if args.enable_doq {
+        let doq_state = state.clone();
+        let doq_port = args.doq_port;
+        let cert_for_doq = args.cert.clone();
+        let key_for_doq = args.key.clone();
+        let doq_task = tokio::spawn(async move {
+            if let Err(e) = run_doq_server(doq_state, doq_port, cert_for_doq, key_for_doq).await {
+                eprintln!("❌ DoQ server error: {}", e);
+            }
+        });
+        tasks.push(doq_task);
+        info!("🚀 DoQ server will start on port {}", args.doq_port);
+    }
+
+    // DoH 서버
+    if args.enable_doh {
+        let doh_state = state.clone();
+        let doh_port = args.doh_port;
+        let cert_for_doh = args.cert.clone();
+        let key_for_doh = args.key.clone();
+        let doh_task = tokio::spawn(async move {
+            if let Err(e) = run_doh_server(doh_state, doh_port, cert_for_doh, key_for_doh).await {
+                eprintln!("❌ DoH server error: {}", e);
+            }
+        });
+        tasks.push(doh_task);
+        info!("🌐 DoH server will start on port {}", args.doh_port);
+    }
+
+    if tasks.is_empty() {
+        return Err(errors::DnsError::ConfigurationError(
+            "No servers enabled".to_string(),
+        ));
+    }
+
+    // 시그널 핸들러 설정
+    let shutdown_signal = setup_shutdown_signal();
+
+    info!("🚀 All servers starting...");
+    info!(
+        "📊 Metrics and statistics will be displayed every {} seconds",
+        STATS_INTERVAL.as_secs()
+    );
+
+    // 서버 시작 완료 메시지
     tokio::select! {
-        result = dns_server => {
-            if let Err(e) = result? {
-                eprintln!("DNS server error: {}", e);
-            }
+        _ = futures::future::join_all(tasks) => {
+            info!("🛑 All servers have stopped");
         }
-        result = dot_server => {
-            if let Err(e) = result? {
-                eprintln!("DoT server error: {}", e);
-            }
-        }
-        result = doh_server => {
-            if let Err(e) = result? {
-                eprintln!("DoH server error: {}", e);
-            }
+        _ = shutdown_signal => {
+            info!("🛑 Received shutdown signal, stopping servers...");
         }
     }
 
+    info!("👋 rfdns shutdown complete");
     Ok(())
 }
 
-fn create_app(state: DnsState) -> Router {
-    Router::new()
-        .route("/", get(root_page))
-        .route("/health", get(health))
-        .route("/cache-stats", get(cache_stats))
-        .route("/cache/clear", delete(clear_all_cache))
-        .route("/cache/domain/:domain", delete(clear_domain_cache))
-        .route("/.well-known/doh", get(doh_metadata))
-        .route(
-            "/dns-query",
-            get(dns_query_get)
-                .post(dns_query_post)
-                .options(dns_query_options),
-        )
-        .route(
-            "/upstream",
-            get(dns_query_with_upstream_get)
-                .post(dns_query_with_upstream_post)
-                .options(dns_query_options),
-        )
-        .layer(CorsLayer::permissive())
-        .with_state(state)
-}
+async fn setup_shutdown_signal() {
+    use tokio::signal;
 
-async fn root_page() -> impl IntoResponse {
-    Redirect::permanent("https://krfoss.org")
-}
+    let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
+        .expect("Failed to install SIGINT handler");
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+        .expect("Failed to install SIGTERM handler");
 
-async fn health() -> impl IntoResponse {
-    "OK"
-}
-
-async fn cache_stats(
-    axum::extract::State(state): axum::extract::State<DnsState>,
-) -> impl IntoResponse {
-    let (entry_count, weighted_size) = state.cache.cache_stats();
-    let stats = serde_json::json!({
-        "cache_entries": entry_count,
-        "cache_size": weighted_size,
-        "max_capacity": MAX_CACHE_SIZE,
-        "max_ttl": MAX_TTL
-    });
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(stats.to_string()))
-        .unwrap()
-}
-
-async fn clear_all_cache(
-    axum::extract::State(state): axum::extract::State<DnsState>,
-) -> impl IntoResponse {
-    state.cache.clear_all();
-
-    let response = serde_json::json!({
-        "status": "success",
-        "message": "All cache entries cleared"
-    });
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(response.to_string()))
-        .unwrap()
-}
-
-async fn clear_domain_cache(
-    axum::extract::State(state): axum::extract::State<DnsState>,
-    Path(domain): Path<String>,
-) -> impl IntoResponse {
-    let removed_count = state.cache.remove_domain(&domain);
-
-    let response = serde_json::json!({
-        "status": "success",
-        "message": format!("Cleared cache for domain: {}", domain),
-        "removed_entries": removed_count
-    });
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(response.to_string()))
-        .unwrap()
-}
-
-async fn dns_query_options() -> impl IntoResponse {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("access-control-allow-origin", "*")
-        .header("access-control-allow-methods", "GET, POST, OPTIONS")
-        .header("access-control-allow-headers", "content-type, accept")
-        .header("access-control-max-age", "86400")
-        .body(axum::body::Body::empty())
-        .unwrap()
-}
-
-async fn doh_metadata() -> impl IntoResponse {
-    let metadata = r#"{
-        "template": "https://test.a85.kr/dns-query{?dns}",
-        "methods": ["GET", "POST"],
-        "formats": ["dns-message"]
-    }"#;
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .header("cache-control", "public, max-age=86400")
-        .body(axum::body::Body::from(metadata))
-        .unwrap()
-}
-
-async fn dns_query_get(
-    axum::extract::State(state): axum::extract::State<DnsState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<impl IntoResponse, StatusCode> {
-    use tracing::error;
-
-    let dns_param = params.get("dns").ok_or(StatusCode::BAD_REQUEST)?;
-    let query = decode_dns_query(dns_param)?;
-
-    let answer = get_record(&query, state).await.map_err(|e| {
-        error!("Error in get_record: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Ok(create_dns_response(answer))
-}
-
-async fn dns_query_post(
-    axum::extract::State(state): axum::extract::State<DnsState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Result<impl IntoResponse, StatusCode> {
-    use tracing::error;
-
-    validate_dns_headers(&headers)?;
-    let answer = get_record(&body, state).await.map_err(|e| {
-        error!("Error in get_record: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Ok(create_dns_response(answer))
-}
-
-async fn dns_query_with_upstream_get(
-    axum::extract::State(state): axum::extract::State<DnsState>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<impl IntoResponse, StatusCode> {
-    use tracing::error;
-
-    let dns_param = params.get("dns").ok_or(StatusCode::BAD_REQUEST)?;
-    let query = decode_dns_query(dns_param)?;
-
-    let answer = get_record(&query, state).await.map_err(|e| {
-        error!("Error in get_record: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Ok(create_dns_response(answer))
-}
-
-async fn dns_query_with_upstream_post(
-    axum::extract::State(state): axum::extract::State<DnsState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Result<impl IntoResponse, StatusCode> {
-    use tracing::error;
-
-    validate_dns_headers(&headers)?;
-    let answer = get_record(&body, state).await.map_err(|e| {
-        error!("Error in get_record: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Ok(create_dns_response(answer))
-}
-
-fn decode_dns_query(query_b64: &str) -> Result<Vec<u8>, StatusCode> {
-    use tracing::error;
-
-    let mut query_b64 = query_b64.to_string();
-
-    // Convert URL-safe base64 to standard base64
-    query_b64 = query_b64.replace('-', "+").replace('_', "/");
-
-    // Deal with padding
-    let padding_needed = 4 - (query_b64.len() % 4);
-    if padding_needed != 4 {
-        query_b64.push_str(&"=".repeat(padding_needed));
+    tokio::select! {
+        _ = sigint.recv() => {
+            info!("🛑 Received SIGINT");
+        }
+        _ = sigterm.recv() => {
+            info!("🛑 Received SIGTERM");
+        }
     }
-
-    base64::engine::general_purpose::STANDARD
-        .decode(&query_b64)
-        .map_err(|e| {
-            error!("Base64 decode error: {}", e);
-            StatusCode::BAD_REQUEST
-        })
-}
-
-fn validate_dns_headers(headers: &HeaderMap) -> Result<(), StatusCode> {
-    let content_type = headers.get("content-type").and_then(|v| v.to_str().ok());
-
-    if content_type != Some("application/dns-message") {
-        return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    }
-
-    Ok(())
-}
-
-fn create_dns_response(answer: Vec<u8>) -> Response {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/dns-message")
-        .header("cache-control", "max-age=300")
-        .header("access-control-allow-origin", "*")
-        .header("access-control-allow-methods", "GET, POST, OPTIONS")
-        .header("access-control-allow-headers", "content-type, accept")
-        .body(axum::body::Body::from(answer))
-        .unwrap()
-}
-
-// TLS certificate and key loading functions (used by generate_self_signed_cert)
-fn generate_self_signed_cert() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
-    let subject_alt_names = vec!["localhost".to_string()];
-    let cert = rcgen::generate_simple_self_signed(subject_alt_names)?;
-    let cert_pem = cert.cert.pem();
-    let key_pem = cert.key_pair.serialize_pem();
-    Ok((cert_pem.as_bytes().to_vec(), key_pem.as_bytes().to_vec()))
-}
-
-// HTTPS DoH server implementation
-async fn run_doh_server(
-    _state: DnsState,
-    port: u16,
-    cert_path: Option<String>,
-    key_path: Option<String>,
-    app: Router,
-) -> anyhow::Result<()> {
-    let tls_config = match (cert_path, key_path) {
-        (Some(cert_file), Some(key_file)) => {
-            info!("Loading TLS certificate from: {}", cert_file);
-            info!("Loading TLS private key from: {}", key_file);
-
-            RustlsConfig::from_pem_file(cert_file, key_file)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to load TLS configuration: {}", e))?
-        }
-        (None, None) => {
-            info!("No certificate provided, generating self-signed certificate for DoH");
-            let (cert_pem, key_pem) = generate_self_signed_cert()?;
-
-            RustlsConfig::from_pem(cert_pem, key_pem)
-                .await
-                .map_err(|e| anyhow::anyhow!("Failed to create TLS configuration: {}", e))?
-        }
-        _ => {
-            return Err(anyhow::anyhow!(
-                "Both certificate and key file must be provided, or neither"
-            ));
-        }
-    };
-
-    let addr = format!("0.0.0.0:{}", port);
-    info!("DNS over HTTPS server listening on https://{}", addr);
-
-    axum_server::bind_rustls(addr.parse()?, tls_config)
-        .serve(app.into_make_service())
-        .await
-        .map_err(|e| anyhow::anyhow!("DoH server error: {}", e))?;
-
-    Ok(())
 }
