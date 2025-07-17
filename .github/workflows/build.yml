@@ -28,5 +28,27 @@ jobs:
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: rfdns
+        name: rfdns-binary
         path: target/release/rfdns
+    - name: Get commit hash
+      id: vars
+      run: echo "sha=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.vars.outputs.sha }}
+        release_name: Release ${{ steps.vars.outputs.sha }}
+        draft: false
+        prerelease: false
+    - name: Upload Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: target/release/rfdns
+        asset_name: rfdns
+        asset_content_type: application/octet-stream
