@@ -62,6 +62,9 @@ pub async fn fetch_dns_from_upstream(
     record_type: &RecordType,
     upstream: &str,
 ) -> DnsResult<Vec<u8>> {
+    use std::net::SocketAddr;
+    use tokio::net::UdpSocket;
+
     let name = hickory_proto::rr::Name::from_str(domain)?;
     let mut message = Message::new();
     message.add_query(hickory_proto::op::Query::query(name, *record_type));
@@ -75,10 +78,42 @@ pub async fn fetch_dns_from_upstream(
         upstream, domain
     );
 
+    // 일반 IP 주소인 경우 UDP DNS 사용
+    if let Ok(ip) = upstream.parse::<std::net::IpAddr>() {
+        let server_addr = SocketAddr::new(ip, 53);
+
+        // UDP DNS 쿼리
+        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        socket.send_to(&query_data, server_addr).await?;
+
+        let mut buffer = vec![0u8; 2048];
+        let (len, _) =
+            tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buffer)).await??;
+
+        buffer.truncate(len);
+
+        if buffer.len() >= 12 {
+            debug!(
+                "✅ Successfully fetched DNS response via UDP from: {} ({} bytes)",
+                upstream,
+                buffer.len()
+            );
+            return Ok(buffer);
+        } else {
+            return Err(DnsError::UpstreamError(format!(
+                "Invalid DNS response from {}: too short ({} bytes)",
+                upstream,
+                buffer.len()
+            )));
+        }
+    }
+
+    // DoH URL인 경우 HTTPS 사용
     let upstream_url = if upstream.starts_with("https://") || upstream.starts_with("http://") {
         upstream.to_string()
     } else {
-        format!("https://{}/dns-query", upstream)
+        // Cloudflare DoH를 기본으로 사용
+        "https://1.1.1.1/dns-query".to_string()
     };
 
     // 재시도 로직 추가

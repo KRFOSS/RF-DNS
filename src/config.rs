@@ -27,13 +27,16 @@ pub const SOCKET_BUFFER_SIZE: usize = 2048;
 pub const SOCKET_POOL_SIZE: usize = 100;
 pub const MAX_QUERY_RETRIES: u32 = 5; // 재시도 횟수 증가
 
-// 루트 DNS 서버들
+// 루트 DNS 서버들 (더 안정적인 서버들 추가)
 pub const ROOT_DNS_SERVERS: &[&str] = &[
-    "1.1.1.1",
-    "8.8.8.8",
-    "9.9.9.9",
-    "208.67.222.222",
-    "149.112.112.112",
+    "1.1.1.1",         // Cloudflare Primary
+    "1.0.0.1",         // Cloudflare Secondary
+    "8.8.8.8",         // Google Primary
+    "8.8.4.4",         // Google Secondary
+    "9.9.9.9",         // Quad9 Primary
+    "149.112.112.112", // Quad9 Secondary
+    "208.67.222.222",  // OpenDNS Primary
+    "208.67.220.220",  // OpenDNS Secondary
 ];
 
 // 우회 도메인 목록

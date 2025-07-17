@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, Semaphore};
 use tokio::time::timeout;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, warn, error};
 
 pub struct DnsResolver {
     dns_servers: Vec<SocketAddr>,
@@ -59,26 +59,49 @@ impl DnsResolver {
             .await
         {
             Ok(Some(response)) => {
-                info!(
-                    "✅ DNS resolution completed for domain: {}, found {} records",
-                    domain,
-                    response.answers().len()
-                );
-                Ok(response)
+                match response.response_code() {
+                    ResponseCode::NoError => {
+                        info!(
+                            "✅ DNS resolution completed for domain: {}, found {} records",
+                            domain,
+                            response.answers().len()
+                        );
+                        Ok(response)
+                    }
+                    ResponseCode::NXDomain => {
+                        info!("🔍 Domain not found (NXDOMAIN): {}", domain);
+                        Ok(response) // NXDOMAIN도 유효한 응답
+                    }
+                    _ => {
+                        warn!(
+                            "⚠️ DNS server returned error for domain {}: {:?}",
+                            domain,
+                            response.response_code()
+                        );
+                        Ok(response) // 에러 응답도 클라이언트에게 전달
+                    }
+                }
             }
             Ok(None) => {
                 warn!("⚠️ No response from DNS servers for domain: {}", domain);
-                // NXDOMAIN 반환
+                // 모든 서버가 응답하지 않을 때 SERVFAIL 반환
                 let mut response = Message::new();
-                response.set_response_code(ResponseCode::NXDomain);
+                response.set_response_code(ResponseCode::ServFail);
                 response.set_message_type(MessageType::Response);
                 response.set_recursion_available(true);
                 response.add_query(Query::query(domain_name, record_type));
                 Ok(response)
             }
             Err(e) => {
-                warn!("❌ Error querying DNS servers for domain {}: {}", domain, e);
-                Err(e)
+                error!("❌ Error querying DNS servers for domain {}: {}", domain, e);
+
+                // 네트워크 에러 시 SERVFAIL 응답 생성
+                let mut response = Message::new();
+                response.set_response_code(ResponseCode::ServFail);
+                response.set_message_type(MessageType::Response);
+                response.set_recursion_available(true);
+                response.add_query(Query::query(domain_name, record_type));
+                Ok(response)
             }
         }
     }
@@ -113,8 +136,22 @@ impl DnsResolver {
                     result = timeout(QUERY_TIMEOUT, query_future) => {
                         match result {
                             Ok(Ok(response)) => {
-                                debug!("✅ Got successful response from {}", server);
-                                Ok(response)
+                                debug!("✅ Got response from {}: rcode={:?}", server, response.response_code());
+
+                                // NXDOMAIN도 유효한 응답으로 처리
+                                match response.response_code() {
+                                    ResponseCode::NoError | ResponseCode::NXDomain => {
+                                        Ok(response)
+                                    },
+                                    ResponseCode::ServFail | ResponseCode::Refused => {
+                                        debug!("❌ Server {} returned error: {:?}", server, response.response_code());
+                                        Err(DnsError::ServerError(format!("Server {} returned {:?}", server, response.response_code())))
+                                    },
+                                    _ => {
+                                        debug!("⚠️ Server {} returned unexpected response: {:?}", server, response.response_code());
+                                        Ok(response) // 기타 응답도 일단 받아들임
+                                    }
+                                }
                             }
                             Ok(Err(e)) => {
                                 debug!("❌ Query failed for {}: {}", server, e);
@@ -142,6 +179,8 @@ impl DnsResolver {
         }
 
         let mut result = None;
+        let mut errors = Vec::new();
+
         while let Some(query_result) = futures.next().await {
             match query_result {
                 Ok(response) => {
@@ -153,13 +192,19 @@ impl DnsResolver {
                     result = Some(response);
                     break;
                 }
-                Err(_) => {
+                Err(e) => {
+                    errors.push(e);
                     continue;
                 }
             }
         }
 
         self.active_queries.fetch_sub(1, Ordering::Relaxed);
+
+        if result.is_none() && !errors.is_empty() {
+            warn!("❌ All DNS servers failed. Errors: {:?}", errors);
+        }
+
         Ok(result)
     }
 
@@ -170,7 +215,6 @@ impl DnsResolver {
         record_type: RecordType,
     ) -> DnsResult<Message> {
         let socket = self.get_socket().await?;
-        socket.connect(server).await?;
 
         let mut query = Message::new();
         query.set_id(rand::random::<u16>());
@@ -180,21 +224,44 @@ impl DnsResolver {
         query.add_query(Query::query(name.clone(), record_type));
 
         let query_bytes = query.to_vec()?;
-        socket.send(&query_bytes).await?;
+
+        // UDP는 연결이 필요 없음, 직접 send_to 사용
+        socket.send_to(&query_bytes, server).await?;
 
         let mut buffer = vec![0u8; SOCKET_BUFFER_SIZE];
-        let len = socket.recv(&mut buffer).await?;
+        let (len, received_addr) = socket.recv_from(&mut buffer).await?;
+
+        // 응답이 올바른 서버에서 온 것인지 확인
+        if received_addr.ip() != server.ip() {
+            return Err(DnsError::NetworkError(format!(
+                "Response from unexpected address: expected {}, got {}",
+                server.ip(),
+                received_addr.ip()
+            )));
+        }
+
         buffer.truncate(len);
 
         self.return_socket(socket).await;
 
         let response = Message::from_vec(&buffer)?;
+
+        // 응답의 유효성 검증
+        if response.id() != query.id() {
+            return Err(DnsError::NetworkError(format!(
+                "Response ID mismatch: expected {}, got {}",
+                query.id(),
+                response.id()
+            )));
+        }
+
         debug!(
-            "📨 Received response from {}: {} answers, {} authorities, {} additionals",
+            "📨 Received response from {}: {} answers, {} authorities, {} additionals, rcode: {:?}",
             server,
             response.answers().len(),
             response.name_servers().len(),
-            response.additionals().len()
+            response.additionals().len(),
+            response.response_code()
         );
 
         Ok(response)
