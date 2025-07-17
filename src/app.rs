@@ -1,5 +1,5 @@
 use crate::cache::DnsCache;
-use crate::dns_utils::{fetch_dns, make_answer, patch_response};
+use crate::dns_utils::patch_response;
 use crate::recursive_dns::RecursiveDnsResolver;
 use anyhow::Result;
 use hickory_proto::op::Message;
@@ -28,11 +28,7 @@ impl Default for DnsState {
     }
 }
 
-pub async fn get_record(
-    query: &[u8],
-    upstream: Option<String>,
-    state: DnsState,
-) -> Result<Vec<u8>> {
+pub async fn get_record(query: &[u8], state: DnsState) -> Result<Vec<u8>> {
     use tracing::{debug, error, trace, warn};
 
     debug!("Received query bytes: {:?}", query);
@@ -116,9 +112,6 @@ pub async fn get_record(
                             _ => RecordType::A, // Default to A record
                         };
 
-                        let upstream = upstream
-                            .unwrap_or_else(|| crate::dns_utils::DEFAULT_UPSTREAM.to_string());
-
                         // Check cache first
                         if let Some(cached_answer) =
                             state.cache.get_with_id(&domain, &record_type, query_id)
@@ -127,11 +120,12 @@ pub async fn get_record(
                             return Ok(cached_answer);
                         }
 
-                        // Fetch from upstream
-                        let answer = fetch_dns(&domain, &record_type, &upstream, &state).await?;
-
-                        // Create a proper response with the original query ID
-                        let mut response = Message::from_vec(&answer)?;
+                        // Fetch using recursive resolver
+                        let response = state
+                            .recursive_resolver
+                            .resolve_domain(&domain, record_type)
+                            .await?;
+                        let mut response = response;
                         response.set_id(query_id);
 
                         // Store in cache
@@ -161,10 +155,9 @@ pub async fn get_record(
         .to_string()
         .trim_end_matches('.')
         .to_string();
-    let upstream = upstream.unwrap_or_else(|| crate::dns_utils::DEFAULT_UPSTREAM.to_string());
     let record_type = question.query_type();
 
-    debug!(domain = %domain, upstream = %upstream, record_type = ?record_type, "get_record called");
+    debug!(domain = %domain, record_type = ?record_type, "get_record called");
 
     // Check cache first
     if let Some(cached_answer) = state.cache.get_with_id(&domain, &record_type, message.id()) {
@@ -173,18 +166,18 @@ pub async fn get_record(
     }
 
     // Fetch from upstream
-    trace!("Cache miss, fetching from upstream: {}", upstream);
-    let answer = fetch_dns(&domain, &record_type, &upstream, &state)
+    trace!("Cache miss, fetching using recursive resolver");
+    let answer = state
+        .recursive_resolver
+        .resolve_domain(&domain, record_type)
         .await
         .map_err(|e| {
-            error!("Failed to fetch DNS from upstream: {}", e);
+            error!("Failed to resolve DNS using recursive resolver: {}", e);
             e
         })?;
 
-    let mut response = make_answer(&message, &answer).map_err(|e| {
-        error!("Failed to create DNS answer: {}", e);
-        e
-    })?;
+    let mut response = answer;
+    response.set_id(message.id());
 
     // Apply patches
     trace!("Applying patch_response");

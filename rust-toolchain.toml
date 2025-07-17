@@ -1,0 +1,8 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-gnu"]
+
+# 컴파일 속도 향상을 위한 설정
+[profile.dev]
+split-debuginfo = "unpacked"  # 디버그 정보 분할로 링킹 속도 향상

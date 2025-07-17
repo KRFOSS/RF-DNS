@@ -13,10 +13,10 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::{delete, get},
 };
+use axum_server::tls_rustls::RustlsConfig;
 use base64::Engine;
 use clap::Parser;
 use std::collections::HashMap;
-use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use tracing::info;
 
@@ -41,7 +41,7 @@ struct Args {
     key: Option<String>,
 
     /// DoH server port
-    #[arg(long, default_value = "30057", help = "Port for DNS over HTTPS server")]
+    #[arg(long, default_value = "443", help = "Port for DNS over HTTPS server")]
     doh_port: u16,
 
     /// DoT server port
@@ -68,16 +68,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dns_server = tokio::spawn(run_dns_server(state.clone(), args.dns_port));
 
     // Start DoT server in background
-    let dot_server = tokio::spawn(run_dot_server(state, args.dot_port, args.cert, args.key));
+    let dot_server = tokio::spawn(run_dot_server(
+        state.clone(),
+        args.dot_port,
+        args.cert.clone(),
+        args.key.clone(),
+    ));
 
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", args.doh_port)).await?;
+    // Start DoH server (HTTPS)
+    let doh_server = tokio::spawn(run_doh_server(
+        state,
+        args.doh_port,
+        args.cert,
+        args.key,
+        app,
+    ));
 
-    info!("DoH Server running on http://0.0.0.0:{}", args.doh_port);
+    info!("DoH Server running on https://0.0.0.0:{}", args.doh_port);
     info!("DoT Server running on 0.0.0.0:{}", args.dot_port);
     info!("Plain DNS Server running on 0.0.0.0:{}", args.dns_port);
-
-    // Start DoH server
-    let doh_server = tokio::spawn(async move { axum::serve(listener, app).await });
 
     // Wait for all servers
     tokio::select! {
@@ -116,7 +125,7 @@ fn create_app(state: DnsState) -> Router {
                 .options(dns_query_options),
         )
         .route(
-            "/*upstream",
+            "/upstream",
             get(dns_query_with_upstream_get)
                 .post(dns_query_with_upstream_post)
                 .options(dns_query_options),
@@ -222,7 +231,7 @@ async fn dns_query_get(
     let dns_param = params.get("dns").ok_or(StatusCode::BAD_REQUEST)?;
     let query = decode_dns_query(dns_param)?;
 
-    let answer = get_record(&query, None, state).await.map_err(|e| {
+    let answer = get_record(&query, state).await.map_err(|e| {
         error!("Error in get_record: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -238,7 +247,7 @@ async fn dns_query_post(
     use tracing::error;
 
     validate_dns_headers(&headers)?;
-    let answer = get_record(&body, None, state).await.map_err(|e| {
+    let answer = get_record(&body, state).await.map_err(|e| {
         error!("Error in get_record: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -248,7 +257,6 @@ async fn dns_query_post(
 
 async fn dns_query_with_upstream_get(
     axum::extract::State(state): axum::extract::State<DnsState>,
-    Path(upstream): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<impl IntoResponse, StatusCode> {
     use tracing::error;
@@ -256,31 +264,26 @@ async fn dns_query_with_upstream_get(
     let dns_param = params.get("dns").ok_or(StatusCode::BAD_REQUEST)?;
     let query = decode_dns_query(dns_param)?;
 
-    let answer = get_record(&query, Some(upstream), state)
-        .await
-        .map_err(|e| {
-            error!("Error in get_record: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let answer = get_record(&query, state).await.map_err(|e| {
+        error!("Error in get_record: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(create_dns_response(answer))
 }
 
 async fn dns_query_with_upstream_post(
     axum::extract::State(state): axum::extract::State<DnsState>,
-    Path(upstream): Path<String>,
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Result<impl IntoResponse, StatusCode> {
     use tracing::error;
 
     validate_dns_headers(&headers)?;
-    let answer = get_record(&body, Some(upstream), state)
-        .await
-        .map_err(|e| {
-            error!("Error in get_record: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let answer = get_record(&body, state).await.map_err(|e| {
+        error!("Error in get_record: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     Ok(create_dns_response(answer))
 }
@@ -327,4 +330,56 @@ fn create_dns_response(answer: Vec<u8>) -> Response {
         .header("access-control-allow-headers", "content-type, accept")
         .body(axum::body::Body::from(answer))
         .unwrap()
+}
+
+// TLS certificate and key loading functions (used by generate_self_signed_cert)
+fn generate_self_signed_cert() -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
+    let subject_alt_names = vec!["localhost".to_string()];
+    let cert = rcgen::generate_simple_self_signed(subject_alt_names)?;
+    let cert_pem = cert.cert.pem();
+    let key_pem = cert.key_pair.serialize_pem();
+    Ok((cert_pem.as_bytes().to_vec(), key_pem.as_bytes().to_vec()))
+}
+
+// HTTPS DoH server implementation
+async fn run_doh_server(
+    _state: DnsState,
+    port: u16,
+    cert_path: Option<String>,
+    key_path: Option<String>,
+    app: Router,
+) -> anyhow::Result<()> {
+    let tls_config = match (cert_path, key_path) {
+        (Some(cert_file), Some(key_file)) => {
+            info!("Loading TLS certificate from: {}", cert_file);
+            info!("Loading TLS private key from: {}", key_file);
+
+            RustlsConfig::from_pem_file(cert_file, key_file)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to load TLS configuration: {}", e))?
+        }
+        (None, None) => {
+            info!("No certificate provided, generating self-signed certificate for DoH");
+            let (cert_pem, key_pem) = generate_self_signed_cert()?;
+
+            RustlsConfig::from_pem(cert_pem, key_pem)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to create TLS configuration: {}", e))?
+        }
+        _ => {
+            return Err(anyhow::anyhow!(
+                "Both certificate and key file must be provided, or neither"
+            ));
+        }
+    };
+
+    let addr = format!("0.0.0.0:{}", port);
+    info!("DNS over HTTPS server listening on https://{}", addr);
+
+    axum_server::bind_rustls(addr.parse()?, tls_config)
+        .serve(app.into_make_service())
+        .await
+        .map_err(|e| anyhow::anyhow!("DoH server error: {}", e))?;
+
+    Ok(())
 }

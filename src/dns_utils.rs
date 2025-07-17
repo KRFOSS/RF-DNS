@@ -10,8 +10,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, trace};
 
-pub const DEFAULT_UPSTREAM: &str = "https://1.1.1.1/dns-query";
-pub const USE_RECURSIVE_DNS: bool = true; // 자체 DNS 조회 사용 여부
+pub const USE_RECURSIVE_DNS: bool = true;
 
 pub static HTTP_CLIENT: Lazy<Arc<Client>> = Lazy::new(|| Arc::new(Client::new()));
 
@@ -50,7 +49,6 @@ pub async fn handle_dns_request(message: Message, state: DnsState) -> Result<Mes
         .trim_end_matches('.')
         .to_string();
     let record_type = question.query_type();
-    let upstream = DEFAULT_UPSTREAM.to_string(); // For now, we use the default upstream.
 
     debug!(domain = %domain, record_type = ?record_type, "handle_dns_request called");
 
@@ -62,7 +60,15 @@ pub async fn handle_dns_request(message: Message, state: DnsState) -> Result<Mes
 
     // Fetch from upstream
     debug!("Cache miss, fetching from upstream for domain: {}", domain);
-    let answer = fetch_dns(&domain, &record_type, &upstream, &state).await?;
+    let answer = if USE_RECURSIVE_DNS {
+        let response = state
+            .recursive_resolver
+            .resolve_domain(&domain, record_type)
+            .await?;
+        response.to_vec()?
+    } else {
+        fetch_dns(&domain, &record_type, "https://1.1.1.1/dns-query", &state).await?
+    };
 
     let mut response = make_answer(&message, &answer)?;
 
@@ -178,8 +184,21 @@ pub async fn patch_response(response: &mut Message, state: &DnsState) -> Result<
             if is_cloudflare_ip(&ip) {
                 debug!("patch_response: IP is Cloudflare, patching to kali.download");
                 // Replace with kali.download response
-                let namu_response_data =
-                    fetch_dns("kali.download", &record_type, DEFAULT_UPSTREAM, state).await?;
+                let namu_response_data = if USE_RECURSIVE_DNS {
+                    let response = state
+                        .recursive_resolver
+                        .resolve_domain("kali.download", record_type)
+                        .await?;
+                    response.to_vec()?
+                } else {
+                    fetch_dns(
+                        "kali.download",
+                        &record_type,
+                        "https://1.1.1.1/dns-query",
+                        state,
+                    )
+                    .await?
+                };
                 let namu_message = Message::from_vec(&namu_response_data)?;
 
                 let mut new_response = Message::new();

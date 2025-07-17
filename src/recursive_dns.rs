@@ -4,14 +4,16 @@ use hickory_proto::rr::{Name, RecordType};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::str::FromStr;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 pub struct RecursiveDnsResolver {
     // 루트 네임서버 목록
     root_servers: Vec<SocketAddr>,
     // 캐시된 네임서버 정보
-    ns_cache: HashMap<String, Vec<SocketAddr>>,
+    ns_cache: Arc<RwLock<HashMap<String, Vec<SocketAddr>>>>,
 }
 
 // 루트 네임서버 IP 주소들 (13개의 루트 서버)
@@ -47,7 +49,7 @@ impl RecursiveDnsResolver {
 
         Ok(Self {
             root_servers,
-            ns_cache: HashMap::new(),
+            ns_cache: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
@@ -60,8 +62,14 @@ impl RecursiveDnsResolver {
 
         let domain_name = Name::from_str(domain)?;
 
+        // 캐시에서 네임서버 정보 확인
+        let cached_servers = {
+            let cache = self.ns_cache.read().await;
+            cache.get(domain).cloned()
+        };
+
         // 루트 서버부터 시작하여 재귀적으로 해결
-        let mut current_servers = self.root_servers.clone();
+        let mut current_servers = cached_servers.unwrap_or_else(|| self.root_servers.clone());
         let mut attempts = 0;
         const MAX_ATTEMPTS: u32 = 10;
 
@@ -93,6 +101,11 @@ impl RecursiveDnsResolver {
                         let next_servers = self.extract_nameservers(&response).await?;
 
                         if !next_servers.is_empty() && next_servers != current_servers {
+                            // 네임서버 정보를 캐시에 저장
+                            {
+                                let mut cache = self.ns_cache.write().await;
+                                cache.insert(domain.to_string(), next_servers.clone());
+                            }
                             current_servers = next_servers;
                             continue;
                         }
