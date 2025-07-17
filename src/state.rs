@@ -200,11 +200,6 @@ impl AppState {
         self.cache.cache_info()
     }
 
-    pub fn get_resolver_stats(&self) -> serde_json::Value {
-        let stats = self.resolver.get_stats();
-        serde_json::json!(stats)
-    }
-
     pub fn get_metrics(&self) -> serde_json::Value {
         serde_json::json!({
             "total_requests": self.metrics.total_requests.load(std::sync::atomic::Ordering::Relaxed),

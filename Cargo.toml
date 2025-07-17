@@ -43,23 +43,3 @@ strip = true
 opt-level = 3
 debug = false
 incremental = true
-
-[profile.dev]
-# 개발 모드에서 컴파일 속도 향상
-debug = 1  # 디버그 정보 축소
-opt-level = 0  # 최적화 비활성화
-incremental = true  # 증분 컴파일 활성화
-codegen-units = 256  # 병렬 컴파일 단위 증가
-
-[profile.dev.package."*"]
-# 의존성 최적화로 컴파일 속도 향상
-opt-level = 3
-debug = false
-
-# 빠른 컴파일을 위한 개발 프로파일
-[profile.dev-fast]
-inherits = "dev"
-opt-level = 1
-debug = false
-incremental = true
-codegen-units = 256

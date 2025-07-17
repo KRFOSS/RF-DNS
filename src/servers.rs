@@ -2,7 +2,7 @@ use crate::config::*;
 use crate::errors::*;
 use crate::metrics::Protocol;
 use crate::state::AppState;
-use hickory_proto::op::{Message, ResponseCode};
+use hickory_proto::op::Message;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -310,31 +310,6 @@ impl TcpDnsServer {
 
         debug!("📤 TCP connection closed: {}", addr);
         Ok(())
-    }
-}
-
-// 에러 응답 생성 헬퍼
-fn create_error_response(query_data: &[u8], error_code: ResponseCode) -> Vec<u8> {
-    match Message::from_vec(query_data) {
-        Ok(query) => {
-            let mut response = Message::new();
-            response.set_id(query.id());
-            response.set_message_type(hickory_proto::op::MessageType::Response);
-            response.set_recursion_desired(query.recursion_desired());
-            response.set_recursion_available(true);
-            response.set_authoritative(false);
-            response.set_response_code(error_code);
-            response.add_queries(query.queries().to_vec());
-
-            response.to_vec().unwrap_or_else(|_| {
-                // 기본 에러 응답
-                vec![0; 12]
-            })
-        }
-        Err(_) => {
-            // 기본 에러 응답
-            vec![0; 12]
-        }
     }
 }
 

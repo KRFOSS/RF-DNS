@@ -20,14 +20,12 @@ pub const HTTP_TIMEOUT: Duration = Duration::from_millis(8000); // 8초로 증�
 
 // 서버 워커 설정
 pub const UDP_WORKERS: usize = 8;
-pub const TCP_WORKERS: usize = 4;
 pub const SOCKET_BUFFER_SIZE: usize = 2048;
 
 // 리졸버 설정
 pub const SOCKET_POOL_SIZE: usize = 100;
-pub const MAX_QUERY_RETRIES: u32 = 5; // 재시도 횟수 증가
 
-// 루트 DNS 서버들 (더 안정적인 서버들 추가)
+// 루트 DNS 서버들
 pub const ROOT_DNS_SERVERS: &[&str] = &[
     "1.1.1.1",         // Cloudflare Primary
     "1.0.0.1",         // Cloudflare Secondary

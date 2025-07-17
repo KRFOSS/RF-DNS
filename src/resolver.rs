@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, Semaphore};
 use tokio::time::timeout;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 pub struct DnsResolver {
     dns_servers: Vec<SocketAddr>,
@@ -284,23 +284,6 @@ impl DnsResolver {
         if pool.len() < SOCKET_POOL_SIZE {
             pool.push(socket);
         }
-    }
-
-    pub fn get_stats(&self) -> std::collections::HashMap<String, serde_json::Value> {
-        let mut stats = std::collections::HashMap::new();
-
-        stats.insert(
-            "dns_servers_count".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(self.dns_servers.len())),
-        );
-        stats.insert(
-            "active_queries".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(
-                self.active_queries.load(Ordering::Relaxed),
-            )),
-        );
-
-        stats
     }
 }
 
