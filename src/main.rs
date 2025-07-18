@@ -55,23 +55,23 @@ struct Args {
     tcp_port: u16,
 
     /// Enable UDP DNS server
-    #[arg(long, default_value_t = true, help = "Enable UDP DNS server")]
+    #[arg(long, help = "Enable UDP DNS server")]
     enable_udp: bool,
 
     /// Enable TCP DNS server
-    #[arg(long, default_value_t = true, help = "Enable TCP DNS server")]
+    #[arg(long, help = "Enable TCP DNS server")]
     enable_tcp: bool,
 
     /// Enable DoH server
-    #[arg(long, default_value_t = true, help = "Enable DNS over HTTPS server")]
+    #[arg(long, help = "Enable DNS over HTTPS server")]
     enable_doh: bool,
 
     /// Enable DoT server
-    #[arg(long, default_value_t = true, help = "Enable DNS over TLS server")]
+    #[arg(long, help = "Enable DNS over TLS server")]
     enable_dot: bool,
 
     /// Enable DoQ server
-    #[arg(long, default_value_t = true, help = "Enable DNS over QUIC server")]
+    #[arg(long, help = "Enable DNS over QUIC server")]
     enable_doq: bool,
 
     /// Run as daemon
