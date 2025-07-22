@@ -50,6 +50,9 @@ impl DnsResolver {
             domain, record_type
         );
 
+        // 도메인 보안 검증 추가
+        crate::utils::validate_domain_security(domain)?;
+
         let domain_name = Name::from_str(domain)
             .map_err(|e| DnsError::ParseError(format!("Invalid domain name: {}", e)))?;
 
@@ -58,30 +61,18 @@ impl DnsResolver {
             .query_servers_parallel(&domain_name, record_type, &self.dns_servers)
             .await
         {
-            Ok(Some(response)) => {
-                match response.response_code() {
-                    ResponseCode::NoError => {
-                        info!(
-                            "✅ DNS resolution completed for domain: {}, found {} records",
-                            domain,
-                            response.answers().len()
-                        );
-                        Ok(response)
-                    }
-                    ResponseCode::NXDomain => {
-                        info!("🔍 Domain not found (NXDOMAIN): {}", domain);
-                        Ok(response) // NXDOMAIN도 유효한 응답
-                    }
-                    _ => {
-                        warn!(
-                            "⚠️ DNS server returned error for domain {}: {:?}",
-                            domain,
-                            response.response_code()
-                        );
-                        Ok(response) // 에러 응답도 클라이언트에게 전달
-                    }
+            Ok(Some(response)) => match response.response_code() {
+                ResponseCode::NoError => Ok(response),
+                ResponseCode::NXDomain => Ok(response),
+                _ => {
+                    warn!(
+                        "⚠️ DNS server returned error for domain {}: {:?}",
+                        domain,
+                        response.response_code()
+                    );
+                    Ok(response)
                 }
-            }
+            },
             Ok(None) => {
                 warn!("⚠️ No response from DNS servers for domain: {}", domain);
                 // 모든 서버가 응답하지 않을 때 SERVFAIL 반환

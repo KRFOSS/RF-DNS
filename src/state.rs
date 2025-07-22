@@ -108,6 +108,47 @@ impl AppState {
         }
     }
 
+    pub async fn process_dns_query_with_upstream(
+        &self,
+        query: &[u8],
+        protocol: Protocol,
+        upstream: &str,
+    ) -> DnsResult<Vec<u8>> {
+        self.metrics.record_request(protocol);
+
+        let message = Message::from_vec(query)?;
+        let query_info = self.extract_query_info(&message)?;
+
+        debug!(
+            "📥 Processing DNS query with upstream: domain={}, type={:?}, protocol={:?}, upstream={}",
+            query_info.domain, query_info.record_type, protocol, upstream
+        );
+
+        let timer = ResponseTimer::new(query_info.domain.clone(), self.metrics.clone());
+
+        // 업스트림을 통한 DNS 쿼리 처리
+        match self
+            .fetch_from_specific_upstream(&query_info, message.id(), upstream)
+            .await
+        {
+            Ok(response_data) => {
+                self.metrics.record_success();
+                timer.finish().await;
+                Ok(response_data)
+            }
+            Err(e) => {
+                error!(
+                    "❌ Failed to resolve domain {} via upstream {}: {}",
+                    query_info.domain, upstream, e
+                );
+                self.metrics.record_failure();
+
+                // 업스트림 실패 시 기본 처리로 폴백
+                self.process_dns_query(query, protocol).await
+            }
+        }
+    }
+
     async fn fetch_from_upstream(
         &self,
         query_info: &QueryInfo,
@@ -166,6 +207,99 @@ impl AppState {
         }
     }
 
+    async fn fetch_from_specific_upstream(
+        &self,
+        query_info: &QueryInfo,
+        query_id: u16,
+        upstream: &str,
+    ) -> DnsResult<Vec<u8>> {
+        debug!(
+            "🔄 Fetching from specific upstream {} for domain: {}",
+            upstream, query_info.domain
+        );
+        self.metrics.record_upstream_request();
+
+        // 업스트림 서버 변환 및 검증
+        let upstream_server = self.resolve_upstream_name(upstream)?;
+
+        let upstream_response = fetch_dns_from_upstream(
+            &query_info.domain,
+            &query_info.record_type,
+            &upstream_server,
+        )
+        .await;
+
+        match upstream_response {
+            Ok(response_data) => {
+                let mut response = Message::from_vec(&response_data)?;
+                response.set_id(query_id);
+
+                // 캐시 저장
+                let ttl = extract_ttl_from_response(&response);
+                self.cache.store(
+                    &query_info.domain,
+                    &query_info.record_type,
+                    response_data.clone(),
+                    ttl,
+                );
+
+                debug!("✅ Successfully fetched from upstream {}", upstream);
+                self.metrics.record_success();
+                Ok(response.to_vec()?)
+            }
+            Err(e) => {
+                error!(
+                    "❌ Specific upstream request failed for domain {} via {}: {}",
+                    query_info.domain, upstream, e
+                );
+                self.metrics.record_upstream_failure();
+                self.metrics.record_failure();
+
+                // 에러 응답 생성
+                let error_response = crate::errors::create_error_response(
+                    query_id,
+                    vec![hickory_proto::op::Query::query(
+                        Name::from_str(&query_info.domain).unwrap(),
+                        query_info.record_type,
+                    )],
+                    ResponseCode::ServFail,
+                );
+
+                Ok(error_response.to_vec()?)
+            }
+        }
+    }
+
+    fn resolve_upstream_name(&self, upstream: &str) -> DnsResult<String> {
+        match upstream.to_lowercase().as_str() {
+            "cloudflare" | "cf" => Ok("1.1.1.1".to_string()),
+            "cloudflare-secondary" | "cf2" => Ok("1.0.0.1".to_string()),
+            "cloudflare-doh" | "cf-doh" => Ok("https://1.1.1.1/dns-query".to_string()),
+            "google" | "g" => Ok("8.8.8.8".to_string()),
+            "google-secondary" | "g2" => Ok("8.8.4.4".to_string()),
+            "google-doh" | "g-doh" => Ok("https://8.8.8.8/dns-query".to_string()),
+            "quad9" | "q9" => Ok("9.9.9.9".to_string()),
+            "quad9-secondary" | "q92" => Ok("149.112.112.112".to_string()),
+            "quad9-doh" | "q9-doh" => Ok("https://9.9.9.9/dns-query".to_string()),
+            "opendns" | "od" => Ok("208.67.222.222".to_string()),
+            "opendns-secondary" | "od2" => Ok("208.67.220.220".to_string()),
+            _ => {
+                // IP 주소나 URL 형태인지 확인
+                if upstream.parse::<std::net::IpAddr>().is_ok()
+                    || upstream.starts_with("https://")
+                    || upstream.starts_with("http://")
+                {
+                    Ok(upstream.to_string())
+                } else {
+                    Err(DnsError::ConfigurationError(format!(
+                        "Unknown upstream server: {}. Available options: cloudflare, google, quad9, opendns, or IP address/URL",
+                        upstream
+                    )))
+                }
+            }
+        }
+    }
+
     async fn apply_response_patches(&self, response: &mut Message) -> DnsResult<()> {
         // Cloudflare IP 패치 로직 (필요시)
         if let Some(query) = response.queries().first() {
@@ -189,6 +323,9 @@ impl AppState {
 
         let domain = query.name().to_string().trim_end_matches('.').to_string();
         let record_type = query.query_type();
+
+        // 도메인 보안 검증 추가
+        crate::utils::validate_domain_security(&domain)?;
 
         Ok(QueryInfo {
             domain,

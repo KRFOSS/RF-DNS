@@ -13,7 +13,7 @@ use axum_server::tls_rustls::RustlsConfig;
 use base64::Engine;
 use std::collections::HashMap;
 use tower_http::cors::CorsLayer;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 pub struct DoHServer {
     state: AppState,
@@ -211,6 +211,17 @@ async fn dns_query_post_handler(
 ) -> Result<impl IntoResponse, StatusCode> {
     validate_dns_headers(&headers)?;
 
+    // 요청 본문 크기 검증
+    if body.len() > crate::config::MAX_DNS_MESSAGE_SIZE {
+        error!("🚨 DNS POST body too large: {} bytes", body.len());
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    if body.len() < crate::config::MIN_DNS_MESSAGE_SIZE {
+        error!("🚨 DNS POST body too small: {} bytes", body.len());
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     match state.process_dns_query(&body, Protocol::DoH).await {
         Ok(response_data) => Ok(create_dns_response(response_data)),
         Err(e) => {
@@ -228,11 +239,11 @@ async fn dns_query_upstream_get_handler(
     let dns_param = params.get("dns").ok_or(StatusCode::BAD_REQUEST)?;
     let query_data = decode_base64_dns_query(dns_param)?;
 
-    info!("🔄 Using upstream DNS server: {}", upstream_path);
-
-    // 이 부분은 업스트림 서버를 사용하는 로직을 구현해야 함
-    // 현재는 기본 처리로 대체
-    match state.process_dns_query(&query_data, Protocol::DoH).await {
+    // 업스트림 서버를 통한 DNS 쿼리 처리
+    match state
+        .process_dns_query_with_upstream(&query_data, Protocol::DoH, &upstream_path)
+        .await
+    {
         Ok(response_data) => Ok(create_dns_response(response_data)),
         Err(e) => {
             error!("❌ DoH upstream query error: {}", e);
@@ -249,9 +260,22 @@ async fn dns_query_upstream_post_handler(
 ) -> Result<impl IntoResponse, StatusCode> {
     validate_dns_headers(&headers)?;
 
-    info!("🔄 Using upstream DNS server: {}", upstream_path);
+    // 요청 본문 크기 검증
+    if body.len() > crate::config::MAX_DNS_MESSAGE_SIZE {
+        error!("🚨 DNS upstream POST body too large: {} bytes", body.len());
+        return Err(StatusCode::PAYLOAD_TOO_LARGE);
+    }
 
-    match state.process_dns_query(&body, Protocol::DoH).await {
+    if body.len() < crate::config::MIN_DNS_MESSAGE_SIZE {
+        error!("🚨 DNS upstream POST body too small: {} bytes", body.len());
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // 업스트림 서버를 통한 DNS 쿼리 처리
+    match state
+        .process_dns_query_with_upstream(&body, Protocol::DoH, &upstream_path)
+        .await
+    {
         Ok(response_data) => Ok(create_dns_response(response_data)),
         Err(e) => {
             error!("❌ DoH upstream POST query error: {}", e);
@@ -273,6 +297,20 @@ async fn dns_query_options_handler() -> impl IntoResponse {
 
 // 헬퍼 함수들
 fn decode_base64_dns_query(query_b64: &str) -> Result<Vec<u8>, StatusCode> {
+    // 1. 길이 검증 (base64로 인코딩된 DNS 메시지 최대 크기)
+    if query_b64.len() > crate::config::MAX_BASE64_QUERY_LENGTH {
+        error!("🚨 Base64 query too long: {} characters", query_b64.len());
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // 2. 특수문자 검증 (base64 + URL-safe 문자만 허용)
+    if !query_b64.chars().all(|c| {
+        c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c == '-' || c == '_'
+    }) {
+        error!("🚨 Invalid characters in base64 query");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     let mut query_b64 = query_b64.to_string();
 
     // URL-safe base64를 표준 base64로 변환
@@ -284,12 +322,29 @@ fn decode_base64_dns_query(query_b64: &str) -> Result<Vec<u8>, StatusCode> {
         query_b64.push_str(&"=".repeat(padding_needed));
     }
 
-    base64::engine::general_purpose::STANDARD
+    let decoded = base64::engine::general_purpose::STANDARD
         .decode(&query_b64)
         .map_err(|e| {
             error!("❌ Base64 decode error: {}", e);
             StatusCode::BAD_REQUEST
-        })
+        })?;
+
+    // 3. 디코딩된 데이터 크기 검증
+    if decoded.len() < crate::config::MIN_DNS_MESSAGE_SIZE {
+        error!("🚨 DNS query too short: {} bytes", decoded.len());
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if decoded.len() > crate::config::MAX_DNS_MESSAGE_SIZE {
+        error!("🚨 DNS query too long: {} bytes", decoded.len());
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    debug!(
+        "✅ Base64 DNS query validation passed: {} bytes",
+        decoded.len()
+    );
+    Ok(decoded)
 }
 
 fn validate_dns_headers(headers: &HeaderMap) -> Result<(), StatusCode> {
@@ -297,6 +352,22 @@ fn validate_dns_headers(headers: &HeaderMap) -> Result<(), StatusCode> {
 
     if content_type != Some("application/dns-message") {
         return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    // Content-Length 검증
+    if let Some(content_length) = headers.get("content-length") {
+        if let Ok(length_str) = content_length.to_str() {
+            if let Ok(length) = length_str.parse::<usize>() {
+                if length > crate::config::MAX_DNS_MESSAGE_SIZE {
+                    error!("🚨 DNS message too large: {} bytes", length);
+                    return Err(StatusCode::PAYLOAD_TOO_LARGE);
+                }
+                if length < crate::config::MIN_DNS_MESSAGE_SIZE {
+                    error!("🚨 DNS message too small: {} bytes", length);
+                    return Err(StatusCode::BAD_REQUEST);
+                }
+            }
+        }
     }
 
     Ok(())

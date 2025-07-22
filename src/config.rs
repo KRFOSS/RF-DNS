@@ -50,3 +50,10 @@ pub const BYPASS_DOMAINS: &[&str] = &[
 // 로깅 설정
 pub const LOG_LEVEL: &str = "info";
 pub const STATS_INTERVAL: Duration = Duration::from_secs(300); // 5분마다 통계 출력
+
+// 보안 설정
+pub const MAX_DOMAIN_LENGTH: usize = 253;
+pub const MAX_LABEL_LENGTH: usize = 63;
+pub const MAX_DNS_MESSAGE_SIZE: usize = 4096;
+pub const MIN_DNS_MESSAGE_SIZE: usize = 12;
+pub const MAX_BASE64_QUERY_LENGTH: usize = 8192;

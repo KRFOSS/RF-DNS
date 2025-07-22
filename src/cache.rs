@@ -137,12 +137,6 @@ impl DnsCache {
             }
         }
 
-        if removed_count > 0 {
-            info!(
-                "🗑️ Removed {} cache entries for domain: {}",
-                removed_count, domain
-            );
-        }
         removed_count
     }
 

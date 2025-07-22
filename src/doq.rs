@@ -147,11 +147,6 @@ impl DoQServer {
     }
 
     async fn handle_connection(connection: Connection, state: AppState) -> DnsResult<()> {
-        info!(
-            "🔗 New DoQ connection from: {}",
-            connection.remote_address()
-        );
-
         // 연결당 스트림 처리
         loop {
             tokio::select! {

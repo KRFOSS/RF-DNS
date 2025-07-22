@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 // HTTP 클라이언트 (재사용)
 pub static HTTP_CLIENT: Lazy<Arc<Client>> = Lazy::new(|| {
@@ -38,6 +38,122 @@ pub fn should_bypass_domain(domain: &str) -> bool {
             domain == bypass_domain
         }
     })
+}
+
+// 도메인명 보안 검증 함수
+pub fn validate_domain_security(domain: &str) -> DnsResult<()> {
+    // 1. 길이 검증 (RFC 1035: 최대 253자)
+    if domain.len() > MAX_DOMAIN_LENGTH {
+        error!(
+            "🚨 Domain name too long: {} characters (max: {})",
+            domain.len(),
+            MAX_DOMAIN_LENGTH
+        );
+        return Err(DnsError::InvalidQuery(format!(
+            "Domain name too long: {} characters",
+            domain.len()
+        )));
+    }
+
+    // 2. 빈 문자열 체크
+    if domain.is_empty() {
+        error!("🚨 Empty domain name");
+        return Err(DnsError::InvalidQuery("Empty domain name".to_string()));
+    }
+
+    // 3. 라벨 길이 검증 (각 라벨은 최대 63자)
+    for label in domain.split('.') {
+        if label.len() > MAX_LABEL_LENGTH {
+            error!(
+                "🚨 Domain label too long: '{}' ({} characters, max: {})",
+                label,
+                label.len(),
+                MAX_LABEL_LENGTH
+            );
+            return Err(DnsError::InvalidQuery(format!(
+                "Domain label too long: {} characters",
+                label.len()
+            )));
+        }
+
+        // 빈 라벨 체크 (연속된 점)
+        if label.is_empty() && domain != "." {
+            error!("🚨 Empty domain label found in: {}", domain);
+            return Err(DnsError::InvalidQuery("Empty domain label".to_string()));
+        }
+    }
+
+    // 4. 허용되지 않는 특수문자 체크
+    let allowed_chars = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_';
+
+    if !domain.chars().all(allowed_chars) {
+        let invalid_chars: Vec<char> = domain.chars().filter(|&c| !allowed_chars(c)).collect();
+        error!(
+            "🚨 Invalid characters in domain '{}': {:?}",
+            domain, invalid_chars
+        );
+        return Err(DnsError::InvalidQuery(format!(
+            "Invalid characters in domain: {:?}",
+            invalid_chars
+        )));
+    }
+
+    // 5. 연속된 점 체크
+    if domain.contains("..") {
+        error!("🚨 Consecutive dots in domain: {}", domain);
+        return Err(DnsError::InvalidQuery(
+            "Consecutive dots in domain".to_string(),
+        ));
+    }
+
+    // 6. 하이픈으로 시작하거나 끝나는 라벨 체크
+    for label in domain.split('.') {
+        if !label.is_empty() && (label.starts_with('-') || label.ends_with('-')) {
+            error!("🚨 Domain label starts or ends with hyphen: '{}'", label);
+            return Err(DnsError::InvalidQuery(format!(
+                "Domain label cannot start or end with hyphen: {}",
+                label
+            )));
+        }
+    }
+
+    // 7. 제어 문자 체크
+    if domain.chars().any(|c| c.is_control()) {
+        error!("🚨 Control characters found in domain: {}", domain);
+        return Err(DnsError::InvalidQuery(
+            "Control characters in domain".to_string(),
+        ));
+    }
+
+    // 8. 유니코드 문자 체크 (퓨니코드가 아닌 경우)
+    if domain.chars().any(|c| !c.is_ascii()) && !domain.starts_with("xn--") {
+        error!("🚨 Non-ASCII characters in non-punycode domain: {}", domain);
+        return Err(DnsError::InvalidQuery(
+            "Non-ASCII characters in domain".to_string(),
+        ));
+    }
+
+    // 9. 악성 패턴 체크
+    let malicious_patterns = [
+        "\\x", "\\u", "%", "<", ">", "\"", "'", "&", ";", "|", "`", "$", "(", ")", "[", "]", "{",
+        "}",
+    ];
+
+    for pattern in &malicious_patterns {
+        if domain.contains(pattern) {
+            error!(
+                "🚨 Potentially malicious pattern '{}' found in domain: {}",
+                pattern, domain
+            );
+            return Err(DnsError::InvalidQuery(format!(
+                "Potentially malicious pattern in domain: {}",
+                pattern
+            )));
+        }
+    }
+
+    debug!("✅ Domain security validation passed for: {}", domain);
+    Ok(())
 }
 
 // TTL 추출
