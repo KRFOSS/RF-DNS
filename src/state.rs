@@ -40,7 +40,24 @@ impl AppState {
     pub async fn process_dns_query(&self, query: &[u8], protocol: Protocol) -> DnsResult<Vec<u8>> {
         self.metrics.record_request(protocol);
 
-        let message = Message::from_vec(query)?;
+        // DNS 메시지 파싱 시 더 자세한 오류 정보 제공
+        let message = match Message::from_vec(query) {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!("🚨 Failed to parse DNS message: {} (size: {} bytes)", e, query.len());
+                if query.len() >= 12 {
+                    // 최소 DNS 헤더 크기가 있으면 헥스 덤프 출력
+                    let hex_dump: String = query[..std::cmp::min(query.len(), 32)]
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    debug!("🔍 DNS message hex dump (first 32 bytes): {}", hex_dump);
+                }
+                return Err(DnsError::InvalidQuery(format!("Failed to parse DNS message: {}", e)));
+            }
+        };
+
         let query_info = self.extract_query_info(&message)?;
 
         debug!(
@@ -116,7 +133,24 @@ impl AppState {
     ) -> DnsResult<Vec<u8>> {
         self.metrics.record_request(protocol);
 
-        let message = Message::from_vec(query)?;
+        // DNS 메시지 파싱 시 더 자세한 오류 정보 제공
+        let message = match Message::from_vec(query) {
+            Ok(msg) => msg,
+            Err(e) => {
+                error!("🚨 Failed to parse DNS message for upstream {}: {} (size: {} bytes)", upstream, e, query.len());
+                if query.len() >= 12 {
+                    // 최소 DNS 헤더 크기가 있으면 헥스 덤프 출력
+                    let hex_dump: String = query[..std::cmp::min(query.len(), 32)]
+                        .iter()
+                        .map(|b| format!("{:02x}", b))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    debug!("🔍 DNS message hex dump (first 32 bytes): {}", hex_dump);
+                }
+                return Err(DnsError::InvalidQuery(format!("Failed to parse DNS message: {}", e)));
+            }
+        };
+
         let query_info = self.extract_query_info(&message)?;
 
         debug!(
@@ -316,15 +350,42 @@ impl AppState {
     }
 
     fn extract_query_info(&self, message: &Message) -> DnsResult<QueryInfo> {
+        // DNS 메시지 기본 검증
+        if message.queries().is_empty() {
+            error!("🚨 DNS message contains no queries");
+            return Err(DnsError::InvalidQuery("No queries in DNS message".to_string()));
+        }
+
         let query = message
             .queries()
             .first()
             .ok_or_else(|| DnsError::InvalidQuery("No query found in message".to_string()))?;
 
-        let domain = query.name().to_string().trim_end_matches('.').to_string();
+        let raw_domain = query.name().to_string();
+        debug!("📝 Raw domain from query: '{}'", raw_domain);
+        
+        let domain = raw_domain.trim_end_matches('.').to_string();
         let record_type = query.query_type();
 
-        // 도메인 보안 검증 추가
+        debug!("📝 Processed domain: '{}', record_type: {:?}", domain, record_type);
+
+        // 루트 도메인 (.) 처리
+        if domain.is_empty() && raw_domain == "." {
+            return Ok(QueryInfo {
+                domain: ".".to_string(),
+                record_type,
+            });
+        }
+
+        // 빈 도메인 체크
+        if domain.is_empty() {
+            error!("🚨 Empty domain name after processing. Raw: '{}', Processed: '{}'", raw_domain, domain);
+            return Err(DnsError::InvalidQuery(format!(
+                "Empty domain name (raw: '{}', processed: '{}')", raw_domain, domain
+            )));
+        }
+
+        // 도메인 보안 검증
         crate::utils::validate_domain_security(&domain)?;
 
         Ok(QueryInfo {

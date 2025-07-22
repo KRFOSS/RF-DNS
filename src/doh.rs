@@ -175,7 +175,7 @@ async fn clear_domain_cache_handler(
 
 async fn doh_metadata_handler() -> impl IntoResponse {
     let metadata = serde_json::json!({
-        "template": "https://dns.krfoss.c01.kr/dns-query{?dns}",
+        "template": "https://dns.dev.c01.kr/dns-query{?dns}",
         "methods": ["GET", "POST"],
         "formats": ["dns-message"]
     });
@@ -297,6 +297,14 @@ async fn dns_query_options_handler() -> impl IntoResponse {
 
 // 헬퍼 함수들
 fn decode_base64_dns_query(query_b64: &str) -> Result<Vec<u8>, StatusCode> {
+    debug!("🔍 Decoding base64 DNS query: '{}' (length: {})", query_b64, query_b64.len());
+    
+    // 0. 빈 문자열 체크
+    if query_b64.is_empty() {
+        error!("🚨 Empty base64 query string");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
     // 1. 길이 검증 (base64로 인코딩된 DNS 메시지 최대 크기)
     if query_b64.len() > crate::config::MAX_BASE64_QUERY_LENGTH {
         error!("🚨 Base64 query too long: {} characters", query_b64.len());
@@ -322,12 +330,16 @@ fn decode_base64_dns_query(query_b64: &str) -> Result<Vec<u8>, StatusCode> {
         query_b64.push_str(&"=".repeat(padding_needed));
     }
 
+    debug!("🔍 Normalized base64 string: '{}'", query_b64);
+
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(&query_b64)
         .map_err(|e| {
             error!("❌ Base64 decode error: {}", e);
             StatusCode::BAD_REQUEST
         })?;
+
+    debug!("🔍 Decoded DNS message: {} bytes", decoded.len());
 
     // 3. 디코딩된 데이터 크기 검증
     if decoded.len() < crate::config::MIN_DNS_MESSAGE_SIZE {
@@ -338,6 +350,16 @@ fn decode_base64_dns_query(query_b64: &str) -> Result<Vec<u8>, StatusCode> {
     if decoded.len() > crate::config::MAX_DNS_MESSAGE_SIZE {
         error!("🚨 DNS query too long: {} bytes", decoded.len());
         return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // 4. DNS 헤더 기본 검증
+    if decoded.len() >= 12 {
+        let header_hex: String = decoded[..12]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        debug!("🔍 DNS header: {}", header_hex);
     }
 
     debug!(
