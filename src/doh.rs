@@ -87,7 +87,7 @@ impl DoHServer {
                     .options(dns_query_options_handler),
             )
             .route(
-                "/up/{upstream}",
+                "/up/{*upstream}",
                 get(dns_query_upstream_get_handler)
                     .post(dns_query_upstream_post_handler)
                     .options(dns_query_options_handler),

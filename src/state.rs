@@ -317,6 +317,10 @@ impl AppState {
             "quad9-doh" | "q9-doh" => Ok("https://9.9.9.9/dns-query".to_string()),
             "opendns" | "od" => Ok("208.67.222.222".to_string()),
             "opendns-secondary" | "od2" => Ok("208.67.220.220".to_string()),
+            "adguard" | "ag" => Ok("94.140.14.14".to_string()),
+            "adguard-secondary" | "ag2" => Ok("94.140.15.15".to_string()),
+            "adguard-doh" | "ag-doh" => Ok("https://dns.adguard-dns.com/dns-query".to_string()),
+            "dns.adguard-dns.com" => Ok("https://dns.adguard-dns.com/dns-query".to_string()),
             _ => {
                 // IP 주소나 URL 형태인지 확인
                 if upstream.parse::<std::net::IpAddr>().is_ok()
@@ -326,7 +330,7 @@ impl AppState {
                     Ok(upstream.to_string())
                 } else {
                     Err(DnsError::ConfigurationError(format!(
-                        "Unknown upstream server: {}. Available options: cloudflare, google, quad9, opendns, or IP address/URL",
+                        "Unknown upstream server: {}. Available options: cloudflare, google, quad9, opendns, adguard, or IP address/URL",
                         upstream
                     )))
                 }
