@@ -51,6 +51,22 @@ pub const BYPASS_DOMAINS: &[&str] = &[
 pub const LOG_LEVEL: &str = "info";
 pub const STATS_INTERVAL: Duration = Duration::from_secs(300); // 5분마다 통계 출력
 
+// 업스트림 DNS 프리셋
+pub const UPSTREAM_PRESETS: &[(&str, &str)] = &[
+    ("cloudflare", "1.1.1.1"),
+    ("cf", "1.1.1.1"),
+    ("google", "8.8.8.8"),
+    ("g", "8.8.8.8"),
+    ("quad9", "9.9.9.9"),
+    ("q9", "9.9.9.9"),
+    ("opendns", "208.67.222.222"),
+    ("od", "208.67.222.222"),
+    ("adguard", "94.140.14.14"),
+    ("ag", "94.140.14.14"),
+    ("eliv", "150.230.255.179"),
+    ("ei", "150.230.255.179"),
+];
+
 // 보안 설정
 pub const MAX_DOMAIN_LENGTH: usize = 253;
 pub const MAX_LABEL_LENGTH: usize = 63;

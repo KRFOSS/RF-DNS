@@ -44,7 +44,11 @@ impl AppState {
         let message = match Message::from_vec(query) {
             Ok(msg) => msg,
             Err(e) => {
-                error!("🚨 Failed to parse DNS message: {} (size: {} bytes)", e, query.len());
+                error!(
+                    "🚨 Failed to parse DNS message: {} (size: {} bytes)",
+                    e,
+                    query.len()
+                );
                 if query.len() >= 12 {
                     // 최소 DNS 헤더 크기가 있으면 헥스 덤프 출력
                     let hex_dump: String = query[..std::cmp::min(query.len(), 32)]
@@ -54,7 +58,10 @@ impl AppState {
                         .join(" ");
                     debug!("🔍 DNS message hex dump (first 32 bytes): {}", hex_dump);
                 }
-                return Err(DnsError::InvalidQuery(format!("Failed to parse DNS message: {}", e)));
+                return Err(DnsError::InvalidQuery(format!(
+                    "Failed to parse DNS message: {}",
+                    e
+                )));
             }
         };
 
@@ -137,7 +144,12 @@ impl AppState {
         let message = match Message::from_vec(query) {
             Ok(msg) => msg,
             Err(e) => {
-                error!("🚨 Failed to parse DNS message for upstream {}: {} (size: {} bytes)", upstream, e, query.len());
+                error!(
+                    "🚨 Failed to parse DNS message for upstream {}: {} (size: {} bytes)",
+                    upstream,
+                    e,
+                    query.len()
+                );
                 if query.len() >= 12 {
                     // 최소 DNS 헤더 크기가 있으면 헥스 덤프 출력
                     let hex_dump: String = query[..std::cmp::min(query.len(), 32)]
@@ -147,7 +159,10 @@ impl AppState {
                         .join(" ");
                     debug!("🔍 DNS message hex dump (first 32 bytes): {}", hex_dump);
                 }
-                return Err(DnsError::InvalidQuery(format!("Failed to parse DNS message: {}", e)));
+                return Err(DnsError::InvalidQuery(format!(
+                    "Failed to parse DNS message: {}",
+                    e
+                )));
             }
         };
 
@@ -305,36 +320,28 @@ impl AppState {
     }
 
     fn resolve_upstream_name(&self, upstream: &str) -> DnsResult<String> {
-        match upstream.to_lowercase().as_str() {
-            "cloudflare" | "cf" => Ok("1.1.1.1".to_string()),
-            "cloudflare-secondary" | "cf2" => Ok("1.0.0.1".to_string()),
-            "cloudflare-doh" | "cf-doh" => Ok("https://1.1.1.1/dns-query".to_string()),
-            "google" | "g" => Ok("8.8.8.8".to_string()),
-            "google-secondary" | "g2" => Ok("8.8.4.4".to_string()),
-            "google-doh" | "g-doh" => Ok("https://8.8.8.8/dns-query".to_string()),
-            "quad9" | "q9" => Ok("9.9.9.9".to_string()),
-            "quad9-secondary" | "q92" => Ok("149.112.112.112".to_string()),
-            "quad9-doh" | "q9-doh" => Ok("https://9.9.9.9/dns-query".to_string()),
-            "opendns" | "od" => Ok("208.67.222.222".to_string()),
-            "opendns-secondary" | "od2" => Ok("208.67.220.220".to_string()),
-            "adguard" | "ag" => Ok("94.140.14.14".to_string()),
-            "adguard-secondary" | "ag2" => Ok("94.140.15.15".to_string()),
-            "adguard-doh" | "ag-doh" => Ok("https://dns.adguard-dns.com/dns-query".to_string()),
-            "dns.adguard-dns.com" => Ok("https://dns.adguard-dns.com/dns-query".to_string()),
-            _ => {
-                // IP 주소나 URL 형태인지 확인
-                if upstream.parse::<std::net::IpAddr>().is_ok()
-                    || upstream.starts_with("https://")
-                    || upstream.starts_with("http://")
-                {
-                    Ok(upstream.to_string())
-                } else {
-                    Err(DnsError::ConfigurationError(format!(
-                        "Unknown upstream server: {}. Available options: cloudflare, google, quad9, opendns, adguard, or IP address/URL",
-                        upstream
-                    )))
-                }
+        let upstream_lower = upstream.to_lowercase();
+
+        // 프리셋에서 검색
+        for (alias, ip) in UPSTREAM_PRESETS {
+            if upstream_lower == *alias {
+                return Ok(ip.to_string());
             }
+        }
+
+        // IP 주소나 URL 형태인지 확인
+        if upstream.parse::<std::net::IpAddr>().is_ok()
+            || upstream.starts_with("https://")
+            || upstream.starts_with("http://")
+        {
+            Ok(upstream.to_string())
+        } else {
+            let preset_names: Vec<&str> = UPSTREAM_PRESETS.iter().map(|(name, _)| *name).collect();
+            Err(DnsError::ConfigurationError(format!(
+                "Unknown upstream server: {}. Available options: {}, or IP address/URL",
+                upstream,
+                preset_names.join(", ")
+            )))
         }
     }
 
@@ -357,7 +364,9 @@ impl AppState {
         // DNS 메시지 기본 검증
         if message.queries().is_empty() {
             error!("🚨 DNS message contains no queries");
-            return Err(DnsError::InvalidQuery("No queries in DNS message".to_string()));
+            return Err(DnsError::InvalidQuery(
+                "No queries in DNS message".to_string(),
+            ));
         }
 
         let query = message
@@ -367,11 +376,14 @@ impl AppState {
 
         let raw_domain = query.name().to_string();
         debug!("📝 Raw domain from query: '{}'", raw_domain);
-        
+
         let domain = raw_domain.trim_end_matches('.').to_string();
         let record_type = query.query_type();
 
-        debug!("📝 Processed domain: '{}', record_type: {:?}", domain, record_type);
+        debug!(
+            "📝 Processed domain: '{}', record_type: {:?}",
+            domain, record_type
+        );
 
         // 루트 도메인 (.) 처리
         if domain.is_empty() && raw_domain == "." {
@@ -383,9 +395,13 @@ impl AppState {
 
         // 빈 도메인 체크
         if domain.is_empty() {
-            error!("🚨 Empty domain name after processing. Raw: '{}', Processed: '{}'", raw_domain, domain);
+            error!(
+                "🚨 Empty domain name after processing. Raw: '{}', Processed: '{}'",
+                raw_domain, domain
+            );
             return Err(DnsError::InvalidQuery(format!(
-                "Empty domain name (raw: '{}', processed: '{}')", raw_domain, domain
+                "Empty domain name (raw: '{}', processed: '{}')",
+                raw_domain, domain
             )));
         }
 

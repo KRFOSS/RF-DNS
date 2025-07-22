@@ -1,3 +1,4 @@
+use crate::app::create_app_router;
 use crate::errors::*;
 use crate::metrics::Protocol;
 use crate::state::AppState;
@@ -7,7 +8,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{delete, get},
+    routing::get,
 };
 use axum_server::tls_rustls::RustlsConfig;
 use base64::Engine;
@@ -72,14 +73,7 @@ impl DoHServer {
     }
 
     fn create_router(&self) -> Router {
-        Router::new()
-            .route("/", get(root_handler))
-            .route("/health", get(health_handler))
-            .route("/metrics", get(metrics_handler))
-            .route("/cache/stats", get(cache_stats_handler))
-            .route("/cache/clear", delete(clear_cache_handler))
-            .route("/cache/domain/{domain}", delete(clear_domain_cache_handler))
-            .route("/.well-known/doh", get(doh_metadata_handler))
+        let doh_router = Router::new()
             .route(
                 "/dns-query",
                 get(dns_query_get_handler)
@@ -91,7 +85,10 @@ impl DoHServer {
                 get(dns_query_upstream_get_handler)
                     .post(dns_query_upstream_post_handler)
                     .options(dns_query_options_handler),
-            )
+            );
+
+        create_app_router()
+            .merge(doh_router)
             .layer(CorsLayer::permissive())
             .with_state(self.state.clone())
     }
@@ -108,84 +105,6 @@ impl DoHServer {
 
         Ok((cert_pem.as_bytes().to_vec(), key_pem.as_bytes().to_vec()))
     }
-}
-
-// HTTP 핸들러들
-async fn root_handler() -> impl IntoResponse {
-    axum::response::Redirect::permanent("https://krfoss.org")
-}
-
-async fn health_handler() -> impl IntoResponse {
-    "OK"
-}
-
-async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let metrics = state.get_metrics();
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(metrics.to_string()))
-        .unwrap()
-}
-
-async fn cache_stats_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let stats = state.get_cache_stats();
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(stats.to_string()))
-        .unwrap()
-}
-
-async fn clear_cache_handler(State(state): State<AppState>) -> impl IntoResponse {
-    state.clear_cache();
-
-    let response = serde_json::json!({
-        "status": "success",
-        "message": "All cache entries cleared"
-    });
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(response.to_string()))
-        .unwrap()
-}
-
-async fn clear_domain_cache_handler(
-    State(state): State<AppState>,
-    Path(domain): Path<String>,
-) -> impl IntoResponse {
-    let removed_count = state.remove_domain_from_cache(&domain);
-
-    let response = serde_json::json!({
-        "status": "success",
-        "message": format!("Cleared cache for domain: {}", domain),
-        "removed_entries": removed_count
-    });
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(response.to_string()))
-        .unwrap()
-}
-
-async fn doh_metadata_handler() -> impl IntoResponse {
-    let metadata = serde_json::json!({
-        "template": "https://dns.dev.c01.kr/dns-query{?dns}",
-        "methods": ["GET", "POST"],
-        "formats": ["dns-message"]
-    });
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .header("cache-control", "public, max-age=86400")
-        .body(axum::body::Body::from(metadata.to_string()))
-        .unwrap()
 }
 
 async fn dns_query_get_handler(
@@ -297,8 +216,12 @@ async fn dns_query_options_handler() -> impl IntoResponse {
 
 // 헬퍼 함수들
 fn decode_base64_dns_query(query_b64: &str) -> Result<Vec<u8>, StatusCode> {
-    debug!("🔍 Decoding base64 DNS query: '{}' (length: {})", query_b64, query_b64.len());
-    
+    debug!(
+        "🔍 Decoding base64 DNS query: '{}' (length: {})",
+        query_b64,
+        query_b64.len()
+    );
+
     // 0. 빈 문자열 체크
     if query_b64.is_empty() {
         error!("🚨 Empty base64 query string");
