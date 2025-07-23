@@ -1,29 +1,26 @@
-# 컴파일 속도 향상을 위한 설정
 [build]
-# 병렬 컴파일 작업 수 증가 (CPU 코어 수에 맞게 조정)
 jobs = 8
 
-# lld 링커 사용 (컴파일 속도 향상)
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-cpu=native"]
 
-# 개발 빌드용 추가 최적화
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = ["-C", "link-arg=-fuse-ld=lld", "-C", "target-cpu=native"]
+
 [profile.dev]
 opt-level = 1
 debug = true
 split-debuginfo = "unpacked"
 incremental = true
 
-# 캐시 설정
 [cargo-new]
 name = "rfdns"
-email = "your-email@example.com"
+email = "me@nergis.dev"
 
-# 레지스트리 설정 (더 빠른 의존성 다운로드)
 [registries.crates-io]
 protocol = "sparse"
 
-# 빌드 캐시 설정
 [env]
 CARGO_TARGET_DIR = "target"
