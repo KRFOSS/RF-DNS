@@ -1676,7 +1676,7 @@ checksum = "95325155c684b1c89f7765e30bc1c42e4a6da51ca513615660cb8a62ef9a88e3"
 
 [[package]]
 name = "rfdns"
-version = "6.0.0"
+version = "7.0.0"
 dependencies = [
  "anyhow",
  "axum",
