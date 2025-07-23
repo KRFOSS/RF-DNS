@@ -1,5 +1,6 @@
 mod app;
 mod cache;
+mod common;
 mod config;
 mod doh;
 mod dot;
@@ -206,9 +207,14 @@ async fn main() -> DnsResult<()> {
         STATS_INTERVAL.as_secs()
     );
 
-    // 서버 시작 완료 메시지
+    // 서버 시작 완료 메시지 (최적화된 버전)
     tokio::select! {
-        _ = futures::future::join_all(tasks) => {
+        _ = async {
+            // 모든 태스크 완료 대기 (futures 의존성 제거)
+            for task in tasks {
+                let _ = task.await;
+            }
+        } => {
             info!("🛑 All servers have stopped");
         }
         _ = shutdown_signal => {

@@ -1,485 +1,192 @@
 use crate::config::*;
 use crate::errors::*;
-use crate::state::AppState;
-use hickory_proto::op::Message;
-use hickory_proto::rr::{RData, RecordType};
-use once_cell::sync::Lazy;
-use reqwest::Client;
-use std::collections::HashSet;
-use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, warn};
+use tracing::info;
+use tracing_subscriber::{fmt, EnvFilter};
+use once_cell::sync::Lazy;
 
-// HTTP 클라이언트 (재사용)
-pub static HTTP_CLIENT: Lazy<Arc<Client>> = Lazy::new(|| {
-    Arc::new(
-        Client::builder()
-            .timeout(HTTP_TIMEOUT)
-            .connect_timeout(Duration::from_millis(1000))
-            .pool_idle_timeout(Duration::from_secs(90))
-            .pool_max_idle_per_host(50)
-            .tcp_keepalive(Duration::from_secs(60))
-            .build()
-            .expect("Failed to create HTTP client"),
-    )
+// 전역 HTTP 클라이언트 (메모리 최적화)
+static HTTP_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .pool_idle_timeout(Duration::from_secs(30))
+        .pool_max_idle_per_host(4)
+        .build()
+        .expect("Failed to create HTTP client")
 });
 
-// 우회 도메인 목록
-pub static BYPASS_DOMAINS_SET: Lazy<HashSet<String>> =
-    Lazy::new(|| BYPASS_DOMAINS.iter().map(|s| s.to_string()).collect());
+/// 최적화된 로깅 설정
+pub fn setup_logging() {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(LOG_LEVEL));
 
-// 우회 도메인 체크
-pub fn should_bypass_domain(domain: &str) -> bool {
-    BYPASS_DOMAINS_SET.iter().any(|bypass_domain| {
-        if bypass_domain.starts_with('.') {
-            domain.ends_with(bypass_domain) || domain == &bypass_domain[1..]
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_file(false)
+        .with_line_number(false)
+        .compact()
+        .init();
+
+    info!("📝 Logging initialized with level: {}", LOG_LEVEL);
+}
+
+/// 빠른 도메인 보안 검증
+pub fn validate_domain_security(domain: &str) -> DnsResult<()> {
+    if domain.len() > MAX_DOMAIN_LENGTH {
+        return Err(DnsError::InvalidQuery("Domain too long".to_string()));
+    }
+
+    // 기본적인 악성 패턴 체크
+    if domain.contains("..") || domain.starts_with('.') {
+        return Err(DnsError::InvalidQuery("Invalid domain format".to_string()));
+    }
+
+    Ok(())
+}
+
+/// 간소화된 업스트림 DNS 요청
+pub async fn fetch_dns_from_upstream(
+    domain: &str,
+    record_type: &hickory_proto::rr::RecordType,
+    upstream: &str,
+) -> DnsResult<Vec<u8>> {
+    use hickory_proto::op::{Message, MessageType, Query, OpCode};
+    use hickory_proto::rr::Name;
+    use std::str::FromStr;
+
+    // DNS 쿼리 생성
+    let mut query = Message::new();
+    query.set_id(crate::common::generate_query_id());
+    query.set_message_type(MessageType::Query);
+    query.set_op_code(OpCode::Query);
+    query.set_recursion_desired(true);
+
+    let name = Name::from_str(domain)
+        .map_err(|e| DnsError::ParseError(format!("Invalid domain: {}", e)))?;
+    query.add_query(Query::query(name, *record_type));
+
+    let query_data = query.to_vec()?;
+
+    // 업스트림 URL 정규화
+    let upstream_url = if upstream.starts_with("https://") {
+        upstream.to_string()
+    } else {
+        format!("https://{}/dns-query", upstream)
+    };
+
+    // HTTP 요청 (재시도 로직 제거하여 단순화)
+    let response = HTTP_CLIENT
+        .post(&upstream_url)
+        .header("Content-Type", "application/dns-message")
+        .header("Accept", "application/dns-message")
+        .header("User-Agent", "rfdns/6.0")
+        .body(query_data)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let response_data = response.bytes().await?;
+        Ok(response_data.to_vec())
+    } else {
+        Err(DnsError::UpstreamError(format!(
+            "Upstream server returned status: {}",
+            response.status()
+        )))
+    }
+}
+
+/// 업스트림 프리셋 해결
+pub fn resolve_upstream_preset(upstream: &str) -> String {
+    UPSTREAM_PRESETS
+        .iter()
+        .find(|(preset, _)| *preset == upstream)
+        .map(|(_, url)| url.to_string())
+        .unwrap_or_else(|| upstream.to_string())
+}
+
+/// 압축된 도메인 검증 (중복 코드 제거)
+#[inline]
+pub fn is_valid_domain_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '-' || c == '.'
+}
+
+/// 빠른 바이트 검증
+#[inline]
+pub fn validate_dns_packet_header(data: &[u8]) -> bool {
+    data.len() >= 12 && // 최소 DNS 헤더 크기
+    (data[2] & 0x80) == 0 // QR 비트가 0 (쿼리)
+}
+
+/// CPU 최적화를 위한 빠른 문자열 검색
+pub fn fast_domain_match(domain: &str, patterns: &[&str]) -> bool {
+    patterns.iter().any(|&pattern| {
+        if pattern.starts_with('.') {
+            domain.ends_with(pattern) || domain == &pattern[1..]
         } else {
-            domain == bypass_domain
+            domain.contains(pattern)
         }
     })
 }
 
-// 도메인명 보안 검증 함수
-pub fn validate_domain_security(domain: &str) -> DnsResult<()> {
-    // 1. 길이 검증 (RFC 1035: 최대 253자)
-    if domain.len() > MAX_DOMAIN_LENGTH {
-        error!(
-            "🚨 Domain name too long: {} characters (max: {})",
-            domain.len(),
-            MAX_DOMAIN_LENGTH
-        );
-        return Err(DnsError::InvalidQuery(format!(
-            "Domain name too long: {} characters",
-            domain.len()
-        )));
-    }
-
-    // 2. 빈 문자열 체크
-    if domain.is_empty() {
-        error!("🚨 Empty domain name");
-        return Err(DnsError::InvalidQuery("Empty domain name".to_string()));
-    }
-
-    // 3. 라벨 길이 검증 (각 라벨은 최대 63자)
-    for label in domain.split('.') {
-        if label.len() > MAX_LABEL_LENGTH {
-            error!(
-                "🚨 Domain label too long: '{}' ({} characters, max: {})",
-                label,
-                label.len(),
-                MAX_LABEL_LENGTH
-            );
-            return Err(DnsError::InvalidQuery(format!(
-                "Domain label too long: {} characters",
-                label.len()
-            )));
-        }
-
-        // 빈 라벨 체크 (연속된 점)
-        if label.is_empty() && domain != "." {
-            error!("🚨 Empty domain label found in: {}", domain);
-            return Err(DnsError::InvalidQuery("Empty domain label".to_string()));
-        }
-    }
-
-    // 4. 허용되지 않는 특수문자 체크
-    let allowed_chars = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_';
-
-    if !domain.chars().all(allowed_chars) {
-        let invalid_chars: Vec<char> = domain.chars().filter(|&c| !allowed_chars(c)).collect();
-        error!(
-            "🚨 Invalid characters in domain '{}': {:?}",
-            domain, invalid_chars
-        );
-        return Err(DnsError::InvalidQuery(format!(
-            "Invalid characters in domain: {:?}",
-            invalid_chars
-        )));
-    }
-
-    // 5. 연속된 점 체크
-    if domain.contains("..") {
-        error!("🚨 Consecutive dots in domain: {}", domain);
-        return Err(DnsError::InvalidQuery(
-            "Consecutive dots in domain".to_string(),
-        ));
-    }
-
-    // 6. 하이픈으로 시작하거나 끝나는 라벨 체크
-    for label in domain.split('.') {
-        if !label.is_empty() && (label.starts_with('-') || label.ends_with('-')) {
-            error!("🚨 Domain label starts or ends with hyphen: '{}'", label);
-            return Err(DnsError::InvalidQuery(format!(
-                "Domain label cannot start or end with hyphen: {}",
-                label
-            )));
-        }
-    }
-
-    // 7. 제어 문자 체크
-    if domain.chars().any(|c| c.is_control()) {
-        error!("🚨 Control characters found in domain: {}", domain);
-        return Err(DnsError::InvalidQuery(
-            "Control characters in domain".to_string(),
-        ));
-    }
-
-    // 8. 유니코드 문자 체크 (퓨니코드가 아닌 경우)
-    if domain.chars().any(|c| !c.is_ascii()) && !domain.starts_with("xn--") {
-        error!("🚨 Non-ASCII characters in non-punycode domain: {}", domain);
-        return Err(DnsError::InvalidQuery(
-            "Non-ASCII characters in domain".to_string(),
-        ));
-    }
-
-    // 9. 악성 패턴 체크
-    let malicious_patterns = [
-        "\\x", "\\u", "%", "<", ">", "\"", "'", "&", ";", "|", "`", "$", "(", ")", "[", "]", "{",
-        "}",
-    ];
-
-    for pattern in &malicious_patterns {
-        if domain.contains(pattern) {
-            error!(
-                "🚨 Potentially malicious pattern '{}' found in domain: {}",
-                pattern, domain
-            );
-            return Err(DnsError::InvalidQuery(format!(
-                "Potentially malicious pattern in domain: {}",
-                pattern
-            )));
-        }
-    }
-
-    debug!("✅ Domain security validation passed for: {}", domain);
-    Ok(())
+/// 메모리 효율적인 응답 크기 체크
+#[inline]
+pub fn should_truncate_udp_response(response_size: usize) -> bool {
+    response_size > 512
 }
 
-// TTL 추출
-pub fn extract_ttl_from_response(response: &Message) -> u64 {
-    let mut min_ttl = MAX_TTL;
-
-    for record in response.answers() {
-        min_ttl = min_ttl.min(record.ttl() as u64);
-    }
-
-    for record in response.name_servers() {
-        min_ttl = min_ttl.min(record.ttl() as u64);
-    }
-
-    // 최소 TTL 보장
-    min_ttl.max(60)
-}
-
-// 업스트림 DNS 서버로부터 DNS 조회
-pub async fn fetch_dns_from_upstream(
-    domain: &str,
-    record_type: &RecordType,
-    upstream: &str,
-) -> DnsResult<Vec<u8>> {
-    use std::net::SocketAddr;
-    use tokio::net::UdpSocket;
-
-    let name = hickory_proto::rr::Name::from_str(domain)?;
-    let mut message = Message::new();
-    message.add_query(hickory_proto::op::Query::query(name, *record_type));
-    message.set_recursion_desired(true);
-    message.set_id(rand::random::<u16>());
-
-    let query_data = message.to_vec()?;
-
-    debug!(
-        "🌐 Fetching DNS from upstream: {} for domain: {}",
-        upstream, domain
-    );
-
-    // 일반 IP 주소인 경우 UDP DNS 사용
-    if let Ok(ip) = upstream.parse::<std::net::IpAddr>() {
-        let server_addr = SocketAddr::new(ip, 53);
-
-        // UDP DNS 쿼리
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
-        socket.send_to(&query_data, server_addr).await?;
-
-        let mut buffer = vec![0u8; 2048];
-        let (len, _) =
-            tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut buffer)).await??;
-
-        buffer.truncate(len);
-
-        if buffer.len() >= 12 {
-            debug!(
-                "✅ Successfully fetched DNS response via UDP from: {} ({} bytes)",
-                upstream,
-                buffer.len()
-            );
-            return Ok(buffer);
-        } else {
-            return Err(DnsError::UpstreamError(format!(
-                "Invalid DNS response from {}: too short ({} bytes)",
-                upstream,
-                buffer.len()
-            )));
-        }
-    }
-
-    // DoH URL인 경우 HTTPS 사용
-    let upstream_url = if upstream.starts_with("https://") || upstream.starts_with("http://") {
-        upstream.to_string()
+/// 간단한 로드 밸런싱 (라운드 로빈)
+pub fn select_upstream_server<'a>(servers: &'a [&'a str], request_count: usize) -> &'a str {
+    if servers.is_empty() {
+        "1.1.1.1"
     } else {
-        // Cloudflare DoH를 기본으로 사용
-        "https://1.1.1.1/dns-query".to_string()
-    };
-
-    // 재시도 로직 추가
-    let mut last_error = None;
-    for attempt in 1..=3 {
-        let result = HTTP_CLIENT
-            .post(&upstream_url)
-            .header("Content-Type", "application/dns-message")
-            .header("Accept", "application/dns-message")
-            .header("User-Agent", "rfdns/6.0")
-            .timeout(Duration::from_secs(10)) // 개별 요청 타임아웃
-            .body(query_data.clone())
-            .send()
-            .await;
-
-        match result {
-            Ok(response) => {
-                if response.status().is_success() {
-                    match response.bytes().await {
-                        Ok(response_data) => {
-                            let response_data = response_data.to_vec();
-
-                            // 응답 검증
-                            if response_data.len() >= 12 {
-                                debug!(
-                                    "✅ Successfully fetched DNS response from upstream: {} ({} bytes) on attempt {}",
-                                    upstream,
-                                    response_data.len(),
-                                    attempt
-                                );
-                                return Ok(response_data);
-                            } else {
-                                warn!(
-                                    "⚠️ Invalid DNS response from {}: too short ({} bytes)",
-                                    upstream,
-                                    response_data.len()
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            warn!("⚠️ Failed to read response body from {}: {}", upstream, e);
-                            last_error = Some(DnsError::UpstreamError(e.to_string()));
-                        }
-                    }
-                } else {
-                    warn!(
-                        "⚠️ HTTP {} from upstream server: {} (attempt {})",
-                        response.status(),
-                        upstream_url,
-                        attempt
-                    );
-                    last_error = Some(DnsError::UpstreamError(format!(
-                        "HTTP {} from upstream server: {}",
-                        response.status(),
-                        upstream_url
-                    )));
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "⚠️ Request failed to {}: {} (attempt {})",
-                    upstream_url, e, attempt
-                );
-                last_error = Some(DnsError::UpstreamError(e.to_string()));
-            }
-        }
-
-        // 마지막 시도가 아니면 잠시 대기
-        if attempt < 3 {
-            tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
-        }
-    }
-
-    // 모든 시도 실패
-    Err(last_error
-        .unwrap_or_else(|| DnsError::UpstreamError("All retry attempts failed".to_string())))
-}
-
-// Cloudflare IP 체크
-pub fn is_cloudflare_ip(ip: &str) -> bool {
-    use ipnet::IpNet;
-    use std::net::IpAddr;
-
-    // Cloudflare IP 범위들
-    static CF_NETWORKS: &[&str] = &[
-        "103.21.244.0/22",
-        "103.22.200.0/22",
-        "103.31.4.0/22",
-        "104.16.0.0/13",
-        "104.24.0.0/14",
-        "108.162.192.0/18",
-        "131.0.72.0/22",
-        "141.101.64.0/18",
-        "162.158.0.0/15",
-        "172.64.0.0/13",
-        "173.245.48.0/20",
-        "188.114.96.0/20",
-        "190.93.240.0/20",
-        "197.234.240.0/22",
-        "198.41.128.0/17",
-        "2400:cb00::/32",
-        "2606:4700::/32",
-        "2803:f800::/32",
-        "2405:b500::/32",
-        "2405:8100::/32",
-        "2a06:98c0::/29",
-        "2c0f:f248::/32",
-    ];
-
-    match IpAddr::from_str(ip) {
-        Ok(addr) => CF_NETWORKS.iter().any(|network| {
-            if let Ok(net) = IpNet::from_str(network) {
-                net.contains(&addr)
-            } else {
-                false
-            }
-        }),
-        Err(_) => false,
+        servers[request_count % servers.len()]
     }
 }
 
-// Cloudflare 패치 필요 여부 체크
-pub fn should_patch_cloudflare(domain: &str, record_type: &RecordType) -> bool {
-    // A 또는 AAAA 레코드만 패치 대상
-    matches!(record_type, RecordType::A | RecordType::AAAA) &&
-    // 우회 도메인이 아닌 경우에만 패치
-    !should_bypass_domain(domain)
+/// 컴팩트한 에러 메시지 생성
+pub fn create_compact_error(error_type: &str, message: &str) -> String {
+    format!("{}: {}", error_type, message)
 }
 
-// Cloudflare 응답 패치
-pub async fn patch_cloudflare_response(
-    response: &mut Message,
-    domain: &str,
-    record_type: &RecordType,
-    app_state: &AppState,
-) -> DnsResult<()> {
-    // 응답에서 첫 번째 IP 추출
-    let first_ip = response
-        .answers()
-        .iter()
-        .find_map(|answer| match answer.data() {
-            RData::A(ip) => Some(ip.to_string()),
-            RData::AAAA(ip) => Some(ip.to_string()),
-            _ => None,
-        });
+/// 성능 측정용 간단한 벤치마크
+pub struct SimpleBenchmark {
+    start: std::time::Instant,
+    name: String,
+}
 
-    if let Some(ip) = first_ip {
-        if is_cloudflare_ip(&ip) {
-            debug!("🔧 Detected Cloudflare IP: {}, patching to alternative", ip);
-
-            // 대체 도메인 목록 (kali.download 외 추가 옵션)
-            let fallback_domains = ["kali.download", "httpbin.org", "example.com"];
-
-            for fallback_domain in fallback_domains {
-                match tokio::time::timeout(
-                    Duration::from_secs(3),
-                    app_state
-                        .resolver
-                        .resolve_domain(fallback_domain, *record_type),
-                )
-                .await
-                {
-                    Ok(Ok(fallback_response)) => {
-                        // 응답 메시지 재구성
-                        let mut new_response = Message::new();
-                        new_response.set_id(response.id());
-                        new_response.set_message_type(response.message_type());
-                        new_response.set_op_code(response.op_code());
-                        new_response.set_authoritative(response.authoritative());
-                        new_response.set_truncated(response.truncated());
-                        new_response.set_recursion_desired(response.recursion_desired());
-                        new_response.set_recursion_available(response.recursion_available());
-                        new_response.set_response_code(response.response_code());
-                        new_response.add_queries(response.queries().to_vec());
-
-                        // 대체 도메인 응답의 레코드들을 원본 도메인으로 변경
-                        let original_domain = hickory_proto::rr::Name::from_str(domain)?;
-                        let new_answers: Vec<_> = fallback_response
-                            .answers()
-                            .iter()
-                            .filter_map(|answer| {
-                                // IP 주소 레코드만 필터링
-                                match answer.data() {
-                                    RData::A(_) | RData::AAAA(_) => {
-                                        let mut new_record = answer.clone();
-                                        new_record.set_name(original_domain.clone());
-                                        new_record.set_ttl(std::cmp::max(answer.ttl(), 300)); // 최소 5분 TTL
-                                        Some(new_record)
-                                    }
-                                    _ => None,
-                                }
-                            })
-                            .collect();
-
-                        if !new_answers.is_empty() {
-                            new_response.add_answers(new_answers);
-                            *response = new_response;
-
-                            debug!(
-                                "✅ Successfully patched Cloudflare response for domain: {} using {}",
-                                domain, fallback_domain
-                            );
-                            return Ok(());
-                        }
-                    }
-                    Ok(Err(e)) => {
-                        warn!("⚠️ Failed to fetch {} for patching: {}", fallback_domain, e);
-                        continue;
-                    }
-                    Err(_) => {
-                        warn!("⚠️ Timeout while fetching {} for patching", fallback_domain);
-                        continue;
-                    }
-                }
-            }
-
-            // 모든 대체 도메인이 실패한 경우 원본 응답 유지
-            warn!(
-                "⚠️ All fallback domains failed for Cloudflare patching, keeping original response"
-            );
+impl SimpleBenchmark {
+    pub fn start(name: &str) -> Self {
+        Self {
+            start: std::time::Instant::now(),
+            name: name.to_string(),
         }
     }
 
-    Ok(())
+    pub fn finish(self) {
+        let elapsed = self.start.elapsed();
+        if elapsed.as_millis() > 100 {
+            info!("⏱️ {}: {}ms", self.name, elapsed.as_millis());
+        }
+    }
 }
 
-// 로그 레벨 설정
-pub fn setup_logging() {
-    use tracing_subscriber::prelude::*;
+/// 메모리 사용량 체크 (디버그용)
+#[cfg(debug_assertions)]
+pub fn log_memory_usage() {
+    // 간단한 메모리 사용량 로깅 (procfs 의존성 제거)
+    info!("🧠 Memory logging disabled in optimized build");
+}
 
-    let log_level = match LOG_LEVEL {
-        "error" => tracing::Level::ERROR,
-        "warn" => tracing::Level::WARN,
-        "info" => tracing::Level::INFO,
-        "debug" => tracing::Level::DEBUG,
-        "trace" => tracing::Level::TRACE,
-        _ => tracing::Level::INFO,
-    };
+#[cfg(not(debug_assertions))]
+pub fn log_memory_usage() {
+    // 릴리즈 빌드에서는 메모리 로깅 비활성화
+}
 
-    tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_target(false)
-                .with_level(true)
-                .with_ansi(true),
-        )
-        .with(tracing_subscriber::filter::LevelFilter::from_level(
-            log_level,
-        ))
-        .init();
-
-    tracing::info!("📝 Logging initialized with level: {}", LOG_LEVEL);
+/// 최적화된 랜덤 ID 생성
+pub fn generate_random_id() -> u16 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static COUNTER: AtomicU16 = AtomicU16::new(1);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
 }

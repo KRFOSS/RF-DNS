@@ -1,12 +1,13 @@
 use crate::config::*;
 use crate::errors::*;
-use crate::common;
+use crate::common::*;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{Name, RecordType};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::net::UdpSocket;
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
 
@@ -41,7 +42,7 @@ impl DnsResolver {
         debug!("🔍 Resolving domain: {}, type: {:?}", domain, record_type);
 
         // 도메인 검증 및 정규화
-        let normalized_domain = common::normalize_domain(domain)?;
+        let normalized_domain = normalize_domain(domain)?;
         
         let domain_name = Name::from_str(&normalized_domain)
             .map_err(|e| DnsError::ParseError(format!("Invalid domain name: {}", e)))?;
@@ -60,19 +61,11 @@ impl DnsResolver {
             }
             Ok(None) => {
                 warn!("⚠️ No response from DNS servers for domain: {}", domain);
-                Ok(crate::errors::create_error_response(
-                    common::generate_query_id(), 
-                    vec![], 
-                    ResponseCode::ServFail
-                ))
+                Ok(create_error_response(generate_query_id(), ResponseCode::ServFail))
             }
             Err(e) => {
                 error!("❌ Error querying DNS servers for domain {}: {}", domain, e);
-                Ok(crate::errors::create_error_response(
-                    common::generate_query_id(), 
-                    vec![], 
-                    ResponseCode::ServFail
-                ))
+                Ok(create_error_response(generate_query_id(), ResponseCode::ServFail))
             }
         }
     }
@@ -85,7 +78,7 @@ impl DnsResolver {
         self.active_queries.fetch_add(1, Ordering::Relaxed);
         
         // 서버 최적화
-        let optimized_servers = common::get_optimal_servers(&self.dns_servers);
+        let optimized_servers = get_optimal_servers(&self.dns_servers);
         
         // 빠른 실패를 위한 타임아웃 설정
         let query_timeout = std::cmp::min(QUERY_TIMEOUT, std::time::Duration::from_millis(3000));
@@ -126,11 +119,11 @@ impl DnsResolver {
         name: &Name,
         record_type: RecordType,
     ) -> DnsResult<Message> {
-        let socket = common::get_pooled_socket().await?;
+        let socket = get_pooled_socket().await?;
 
         // DNS 쿼리 생성
         let mut query = Message::new();
-        query.set_id(common::generate_query_id());
+        query.set_id(generate_query_id());
         query.set_message_type(MessageType::Query);
         query.set_op_code(OpCode::Query);
         query.set_recursion_desired(true);
@@ -147,7 +140,7 @@ impl DnsResolver {
 
         // 보안 검증
         if received_addr.ip() != server.ip() {
-            common::return_pooled_socket(socket).await;
+            return_pooled_socket(socket).await;
             return Err(DnsError::NetworkError(format!(
                 "Response from unexpected address: expected {}, got {}",
                 server.ip(),
@@ -156,7 +149,7 @@ impl DnsResolver {
         }
 
         buffer.truncate(len);
-        common::return_pooled_socket(socket).await;
+        return_pooled_socket(socket).await;
 
         let response = Message::from_vec(&buffer)?;
 

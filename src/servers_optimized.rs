@@ -3,6 +3,7 @@ use crate::errors::*;
 use crate::metrics::Protocol;
 use crate::state::AppState;
 use crate::common::*;
+use hickory_proto::op::Message;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -39,11 +39,12 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn cache_stats_handler(State(state): State<AppState>) -> impl IntoResponse {
     let stats = state.get_cache_stats();
-
+    let stats_text = format!("Cache entries: {}, Cache size: {} KB", stats.0, stats.1 / 1024);
+    
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/json")
-        .body(axum::body::Body::from(stats.to_string()))
+        .body(axum::body::Body::from(stats_text))
         .unwrap()
 }
 
