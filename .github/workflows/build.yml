@@ -65,7 +65,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-arm
     if: github.event_name == 'push' && github.ref == 'refs/heads/latest'
     
     steps:
