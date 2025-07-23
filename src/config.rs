@@ -5,7 +5,6 @@ use std::time::Duration;
 pub const DNS_PORT: u16 = 53;
 pub const DOH_PORT: u16 = 443;
 pub const DOT_PORT: u16 = 853;
-pub const DOQ_PORT: u16 = 8853; // DoQ는 별도 포트 사용
 
 // 캐시 설정
 pub const MAX_CACHE_SIZE: u64 = 500000; // 캐시 크기 대폭 증가

@@ -33,7 +33,6 @@ pub struct Metrics {
     pub tcp_requests: Arc<AtomicU64>,
     pub doh_requests: Arc<AtomicU64>,
     pub dot_requests: Arc<AtomicU64>,
-    pub doq_requests: Arc<AtomicU64>,
 }
 
 impl Metrics {
@@ -54,7 +53,6 @@ impl Metrics {
             tcp_requests: Arc::new(AtomicU64::new(0)),
             doh_requests: Arc::new(AtomicU64::new(0)),
             dot_requests: Arc::new(AtomicU64::new(0)),
-            doq_requests: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -153,7 +151,6 @@ impl Metrics {
         let tcp_requests = self.tcp_requests.load(Ordering::Relaxed);
         let doh_requests = self.doh_requests.load(Ordering::Relaxed);
         let dot_requests = self.dot_requests.load(Ordering::Relaxed);
-        let doq_requests = self.doq_requests.load(Ordering::Relaxed);
 
         info!(
             "📊 DNS Server Statistics:\n\
@@ -162,7 +159,7 @@ impl Metrics {
             🔄 Upstream: Requests={}, Failures={} (Failure Rate: {:.1}%)\n\
             🔗 Connections: Active={}, Total={}\n\
             ⏱️  Avg Response Time: {}ms\n\
-            🌐 Protocols: UDP={}, TCP={}, DoH={}, DoT={}, DoQ={}",
+            🌐 Protocols: UDP={}, TCP={}, DoH={}, DoT={}",
             total_requests,
             successful_requests,
             failed_requests,
@@ -183,8 +180,7 @@ impl Metrics {
             udp_requests,
             tcp_requests,
             doh_requests,
-            dot_requests,
-            doq_requests
+            dot_requests
         );
     }
 

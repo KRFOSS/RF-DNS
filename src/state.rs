@@ -441,8 +441,7 @@ impl AppState {
                 "udp": self.metrics.udp_requests.load(std::sync::atomic::Ordering::Relaxed),
                 "tcp": self.metrics.tcp_requests.load(std::sync::atomic::Ordering::Relaxed),
                 "doh": self.metrics.doh_requests.load(std::sync::atomic::Ordering::Relaxed),
-                "dot": self.metrics.dot_requests.load(std::sync::atomic::Ordering::Relaxed),
-                "doq": self.metrics.doq_requests.load(std::sync::atomic::Ordering::Relaxed)
+                "dot": self.metrics.dot_requests.load(std::sync::atomic::Ordering::Relaxed)
             }
         })
     }

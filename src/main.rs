@@ -41,10 +41,6 @@ struct Args {
     #[arg(long, default_value_t = DOT_PORT, help = "Port for DNS over TLS server")]
     dot_port: u16,
 
-    /// DoQ server port
-    #[arg(long, default_value_t = DOQ_PORT, help = "Port for DNS over QUIC server")]
-    doq_port: u16,
-
     /// Plain DNS server port
     #[arg(long, default_value_t = DNS_PORT, help = "Port for plain DNS server")]
     dns_port: u16,
@@ -68,10 +64,6 @@ struct Args {
     /// Enable DoT server
     #[arg(long, help = "Enable DNS over TLS server")]
     enable_dot: bool,
-
-    /// Enable DoQ server
-    #[arg(long, help = "Enable DNS over QUIC server")]
-    enable_doq: bool,
 
     /// Run as daemon
     #[arg(long, help = "Run as daemon in background")]
