@@ -2,7 +2,6 @@ mod app;
 mod cache;
 mod config;
 mod doh;
-mod doq;
 mod dot;
 mod errors;
 mod metrics;
@@ -15,7 +14,6 @@ use clap::Parser;
 use config::*;
 use daemonize::Daemonize;
 use doh::run_doh_server;
-use doq::run_doq_server;
 use dot::run_dot_server;
 use errors::DnsResult;
 use servers::{run_tcp_server, run_udp_server};
@@ -176,21 +174,6 @@ async fn main() -> DnsResult<()> {
         });
         tasks.push(dot_task);
         info!("🔐 DoT server will start on port {}", args.dot_port);
-    }
-
-    // DoQ 서버
-    if args.enable_doq {
-        let doq_state = state.clone();
-        let doq_port = args.doq_port;
-        let cert_for_doq = args.cert.clone();
-        let key_for_doq = args.key.clone();
-        let doq_task = tokio::spawn(async move {
-            if let Err(e) = run_doq_server(doq_state, doq_port, cert_for_doq, key_for_doq).await {
-                eprintln!("❌ DoQ server error: {}", e);
-            }
-        });
-        tasks.push(doq_task);
-        info!("🚀 DoQ server will start on port {}", args.doq_port);
     }
 
     // DoH 서버

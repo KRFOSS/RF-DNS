@@ -66,7 +66,6 @@ impl Metrics {
             Protocol::TCP => self.tcp_requests.fetch_add(1, Ordering::Relaxed),
             Protocol::DoH => self.doh_requests.fetch_add(1, Ordering::Relaxed),
             Protocol::DoT => self.dot_requests.fetch_add(1, Ordering::Relaxed),
-            Protocol::DoQ => self.doq_requests.fetch_add(1, Ordering::Relaxed),
         };
     }
 
@@ -213,7 +212,6 @@ pub enum Protocol {
     TCP,
     DoH,
     DoT,
-    DoQ,
 }
 
 pub struct ResponseTimer {
