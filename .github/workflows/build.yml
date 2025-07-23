@@ -50,7 +50,7 @@ jobs:
 
   release:
     needs: build
-    runs-on: ubuntu-latest-arm
+    runs-on: ubuntu-latest-arm64
     if: github.event_name == 'push' && github.ref == 'refs/heads/latest'
 
     steps:
