@@ -111,12 +111,14 @@ impl AppState {
                 // 캐시 저장
                 let response_bytes = response.to_vec()?;
                 let ttl = extract_ttl_from_response(&response);
-                self.cache.store(
-                    &query_info.domain,
-                    &query_info.record_type,
-                    response_bytes.clone(),
-                    ttl,
-                );
+                self.cache
+                    .store(
+                        &query_info.domain,
+                        &query_info.record_type,
+                        response_bytes.clone(),
+                        ttl,
+                    )
+                    .await;
 
                 self.metrics.record_success();
                 timer.finish().await;
@@ -223,12 +225,14 @@ impl AppState {
 
                 // 캐시 저장
                 let ttl = extract_ttl_from_response(&response);
-                self.cache.store(
-                    &query_info.domain,
-                    &query_info.record_type,
-                    response_data.clone(),
-                    ttl,
-                );
+                self.cache
+                    .store(
+                        &query_info.domain,
+                        &query_info.record_type,
+                        response_data.clone(),
+                        ttl,
+                    )
+                    .await;
 
                 self.metrics.record_success();
                 Ok(response.to_vec()?)
@@ -285,12 +289,14 @@ impl AppState {
 
                 // 캐시 저장
                 let ttl = extract_ttl_from_response(&response);
-                self.cache.store(
-                    &query_info.domain,
-                    &query_info.record_type,
-                    response_data.clone(),
-                    ttl,
-                );
+                self.cache
+                    .store(
+                        &query_info.domain,
+                        &query_info.record_type,
+                        response_data.clone(),
+                        ttl,
+                    )
+                    .await;
 
                 debug!("✅ Successfully fetched from upstream {}", upstream);
                 self.metrics.record_success();
