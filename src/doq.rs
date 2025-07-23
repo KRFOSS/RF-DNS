@@ -1,7 +1,7 @@
 use crate::errors::*;
 use crate::metrics::Protocol;
 use crate::state::AppState;
-use quinn::{Connection, Endpoint, ServerConfig, VarInt};
+use quinn::{Connection, Endpoint, ServerConfig, VarInt, TransportConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -79,16 +79,17 @@ impl DoQServer {
         let mut server_config = ServerConfig::with_single_cert(cert_chain, private_key)
             .map_err(|e| DnsError::TlsError(format!("Failed to create server config: {}", e)))?;
 
-        // QUIC 전송 설정
-        let transport_config = Arc::get_mut(&mut server_config.transport).ok_or_else(|| {
-            DnsError::ConfigurationError("Failed to get transport config".to_string())
-        })?;
-
+        // QUIC 전송 설정 (새로운 TransportConfig 생성)
+        let mut transport_config = TransportConfig::default();
+        
         // DoQ 특화 설정
         transport_config.max_concurrent_bidi_streams(VarInt::from_u32(100));
         transport_config.max_concurrent_uni_streams(VarInt::from_u32(100));
         transport_config
             .max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into().unwrap()));
+        
+        // 전송 설정 적용
+        server_config.transport = Arc::new(transport_config);
 
         Ok(server_config)
     }
@@ -143,6 +144,7 @@ impl DoQServer {
                 DnsError::TlsError("No private key found in generated certificate".to_string())
             })?;
 
+        info!("✅ Generated self-signed certificate for DoQ server");
         Ok((cert_der, key_der))
     }
 
@@ -186,27 +188,17 @@ impl DoQServer {
         mut recv: quinn::RecvStream,
         state: AppState,
     ) -> DnsResult<()> {
-        // DNS 메시지 길이 읽기 (2바이트)
-        let mut len_bytes = [0u8; 2];
-        recv.read_exact(&mut len_bytes)
-            .await
-            .map_err(|e| DnsError::NetworkError(format!("Failed to read message length: {}", e)))?;
-
-        let message_len = u16::from_be_bytes(len_bytes) as usize;
-
-        // DNS 메시지가 너무 큰 경우 방지
-        if message_len > MAX_DNS_MESSAGE_SIZE {
-            return Err(DnsError::ParseError(format!(
-                "DNS message too large: {}",
-                message_len
-            )));
-        }
-
-        // DNS 메시지 읽기
-        let mut dns_message = vec![0u8; message_len];
-        recv.read_exact(&mut dns_message)
+        // DoQ RFC 9250에 따른 처리
+        // DNS 메시지는 길이 프리픽스 없이 직접 전송됨
+        
+        // 전체 스트림 데이터 읽기
+        let dns_message = recv.read_to_end(MAX_DNS_MESSAGE_SIZE)
             .await
             .map_err(|e| DnsError::NetworkError(format!("Failed to read DNS message: {}", e)))?;
+
+        if dns_message.is_empty() {
+            return Err(DnsError::ParseError("Empty DNS message".to_string()));
+        }
 
         debug!(
             "📨 Received DoQ DNS query, size: {} bytes",
@@ -216,15 +208,7 @@ impl DoQServer {
         // DNS 쿼리 처리
         match state.process_dns_query(&dns_message, Protocol::DoQ).await {
             Ok(response) => {
-                // 응답 길이 전송
-                let response_len = response.len() as u16;
-                send.write_all(&response_len.to_be_bytes())
-                    .await
-                    .map_err(|e| {
-                        DnsError::NetworkError(format!("Failed to write response length: {}", e))
-                    })?;
-
-                // 응답 데이터 전송
+                // DoQ에서는 응답을 직접 전송 (길이 프리픽스 없음)
                 send.write_all(&response).await.map_err(|e| {
                     DnsError::NetworkError(format!("Failed to write response: {}", e))
                 })?;
@@ -240,11 +224,10 @@ impl DoQServer {
 
                 // 에러 응답 생성 및 전송
                 let error_response = Self::create_error_response(&dns_message);
-                let response_len = error_response.len() as u16;
-
-                let _ = send.write_all(&response_len.to_be_bytes()).await;
-                let _ = send.write_all(&error_response).await;
-                let _ = send.finish();
+                if !error_response.is_empty() {
+                    let _ = send.write_all(&error_response).await;
+                    let _ = send.finish();
+                }
             }
         }
 
