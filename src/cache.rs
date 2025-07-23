@@ -8,7 +8,6 @@ use tracing::{debug, info, warn};
 #[derive(Debug)]
 pub enum CacheError {
     InvalidMessage,
-    InvalidTtl,
     SystemTimeError(std::time::SystemTimeError),
 }
 
@@ -16,7 +15,6 @@ impl std::fmt::Display for CacheError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CacheError::InvalidMessage => write!(f, "Invalid DNS message format"),
-            CacheError::InvalidTtl => write!(f, "TTL validation failed"),
             CacheError::SystemTimeError(e) => write!(f, "System time error: {}", e),
         }
     }
@@ -100,26 +98,8 @@ impl DnsCache {
         None
     }
 
-    pub fn get_with_id(
-        &self,
-        domain: &str,
-        record_type: &RecordType,
-        query_id: u16,
-    ) -> Option<Vec<u8>> {
-        if let Some(cached_data) = self.get(domain, record_type) {
-            // ID는 DNS 메시지의 처음 2바이트에 있으므로 직접 수정 (더 효율적)
-            if cached_data.len() >= 2 {
-                let mut updated_data = cached_data;
-                updated_data[0] = (query_id >> 8) as u8;
-                updated_data[1] = (query_id & 0xff) as u8;
-                return Some(updated_data);
-            }
-        }
-        None
-    }
-
     /// 안전한 get_with_id 버전 (에러 처리 포함)
-    pub fn get_with_id_safe(
+    pub fn get_with_id(
         &self,
         domain: &str,
         record_type: &RecordType,
@@ -138,7 +118,6 @@ impl DnsCache {
         Ok(None)
     }
 
-    /// 메인 비동기 스토어 - 백그라운드에서 캐시 저장으로 성능 향상
     pub async fn store(&self, domain: &str, record_type: &RecordType, data: Vec<u8>, ttl: u64) {
         let cache = self.cache.clone();
         let key = (domain.to_lowercase(), *record_type);
@@ -162,28 +141,6 @@ impl DnsCache {
         tokio::spawn(async move {
             cache.insert(key, entry);
         });
-    }
-
-    /// 동기 스토어 - 즉시 저장이 필요한 경우에만 사용
-    pub fn store_sync(&self, domain: &str, record_type: &RecordType, data: Vec<u8>, ttl: u64) {
-        let key = (domain.to_lowercase(), *record_type);
-        let effective_ttl = std::cmp::min(ttl, MAX_TTL);
-
-        let entry = CacheEntry {
-            data,
-            ttl: effective_ttl,
-            created_at: std::time::SystemTime::now(),
-        };
-
-        debug!(
-            "📦 Storing in cache sync: domain={}, record_type={:?}, ttl={}s, size={}B",
-            domain,
-            record_type,
-            effective_ttl,
-            entry.data.len()
-        );
-
-        self.cache.insert(key, entry);
     }
 
     pub fn remove_domain(&self, domain: &str) -> u64 {

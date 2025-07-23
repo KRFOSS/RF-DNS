@@ -75,7 +75,7 @@ impl AppState {
         let timer = ResponseTimer::new(query_info.domain.clone(), self.metrics.clone());
 
         // 캐시 확인
-        if let Some(cached_response) =
+        if let Ok(Some(cached_response)) =
             self.cache
                 .get_with_id(&query_info.domain, &query_info.record_type, message.id())
         {
