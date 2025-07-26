@@ -9,7 +9,8 @@ use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, error, warn};
+use tokio::sync::RwLock;
+use tracing::{debug, error, info, warn};
 
 // HTTP 클라이언트 (재사용)
 pub static HTTP_CLIENT: Lazy<Arc<Client>> = Lazy::new(|| {
@@ -28,6 +29,149 @@ pub static HTTP_CLIENT: Lazy<Arc<Client>> = Lazy::new(|| {
 // 우회 도메인 목록
 pub static BYPASS_DOMAINS_SET: Lazy<HashSet<String>> =
     Lazy::new(|| BYPASS_DOMAINS.iter().map(|s| s.to_string()).collect());
+
+// Cloudflare IP 범위 캐시 (동적으로 로드)
+static CLOUDFLARE_NETWORKS: Lazy<Arc<RwLock<Vec<String>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(Vec::new())));
+
+// Cloudflare IP 범위 업데이트 함수
+pub async fn update_cloudflare_networks() -> DnsResult<()> {
+    info!("🌐 Updating Cloudflare IP ranges...");
+
+    let v4_url = "https://www.cloudflare.com/ips-v4/";
+    let v6_url = "https://www.cloudflare.com/ips-v6/";
+
+    let mut networks = Vec::new();
+
+    // IPv4 범위 가져오기
+    match fetch_ip_ranges(v4_url).await {
+        Ok(mut v4_ranges) => {
+            info!("✅ Fetched {} IPv4 ranges from Cloudflare", v4_ranges.len());
+            networks.append(&mut v4_ranges);
+        }
+        Err(e) => {
+            error!("❌ Failed to fetch IPv4 ranges: {}", e);
+            return Err(e);
+        }
+    }
+
+    // IPv6 범위 가져오기
+    match fetch_ip_ranges(v6_url).await {
+        Ok(mut v6_ranges) => {
+            info!("✅ Fetched {} IPv6 ranges from Cloudflare", v6_ranges.len());
+            networks.append(&mut v6_ranges);
+        }
+        Err(e) => {
+            error!("❌ Failed to fetch IPv6 ranges: {}", e);
+            return Err(e);
+        }
+    }
+
+    // 캐시 업데이트
+    {
+        let mut cache = CLOUDFLARE_NETWORKS.write().await;
+        *cache = networks;
+        info!(
+            "✅ Updated Cloudflare IP cache with {} total ranges",
+            cache.len()
+        );
+    }
+
+    Ok(())
+}
+
+// Cloudflare 네트워크 범위 상태 조회
+pub async fn get_cloudflare_networks_info() -> (usize, Option<std::time::SystemTime>) {
+    let networks = CLOUDFLARE_NETWORKS.read().await;
+    let count = networks.len();
+
+    // 마지막 업데이트 시간은 시스템 시간으로 추정 (실제로는 별도 저장이 필요)
+    let last_update = if count > 0 {
+        Some(std::time::SystemTime::now())
+    } else {
+        None
+    };
+
+    (count, last_update)
+}
+
+// 강제 Cloudflare IP 범위 업데이트 (재시도 포함)
+pub async fn force_update_cloudflare_networks(max_retries: u32) -> DnsResult<()> {
+    for attempt in 1..=max_retries {
+        info!(
+            "🔄 Force updating Cloudflare IP ranges (attempt {}/{})",
+            attempt, max_retries
+        );
+
+        match update_cloudflare_networks().await {
+            Ok(()) => {
+                info!("✅ Force update successful on attempt {}", attempt);
+                return Ok(());
+            }
+            Err(e) => {
+                if attempt < max_retries {
+                    warn!(
+                        "⚠️ Attempt {} failed: {}. Retrying in 30 seconds...",
+                        attempt, e
+                    );
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                } else {
+                    error!("❌ All {} attempts failed. Last error: {}", max_retries, e);
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    Err(DnsError::UpstreamError(
+        "Force update failed after all retries".to_string(),
+    ))
+}
+
+// IP 범위 가져오기 헬퍼 함수
+async fn fetch_ip_ranges(url: &str) -> DnsResult<Vec<String>> {
+    debug!("🔍 Fetching IP ranges from: {}", url);
+
+    let response = HTTP_CLIENT
+        .get(url)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| DnsError::UpstreamError(format!("Failed to fetch {}: {}", url, e)))?;
+
+    if !response.status().is_success() {
+        return Err(DnsError::UpstreamError(format!(
+            "HTTP {} from {}",
+            response.status(),
+            url
+        )));
+    }
+
+    let text = response.text().await.map_err(|e| {
+        DnsError::UpstreamError(format!("Failed to read response from {}: {}", url, e))
+    })?;
+
+    let ranges: Vec<String> = text
+        .lines()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .map(|line| line.to_string())
+        .collect();
+
+    if ranges.is_empty() {
+        return Err(DnsError::UpstreamError(format!(
+            "No IP ranges found in response from {}",
+            url
+        )));
+    }
+
+    debug!(
+        "✅ Successfully parsed {} IP ranges from {}",
+        ranges.len(),
+        url
+    );
+    Ok(ranges)
+}
 
 // 우회 도메인 체크
 pub fn should_bypass_domain(domain: &str) -> bool {
@@ -309,46 +453,65 @@ pub async fn fetch_dns_from_upstream(
 }
 
 // Cloudflare IP 체크
-pub fn is_cloudflare_ip(ip: &str) -> bool {
+pub async fn is_cloudflare_ip(ip: &str) -> bool {
     use ipnet::IpNet;
     use std::net::IpAddr;
 
-    // Cloudflare IP 범위들
-    static CF_NETWORKS: &[&str] = &[
-        "103.21.244.0/22",
-        "103.22.200.0/22",
-        "103.31.4.0/22",
-        "104.16.0.0/13",
-        "104.24.0.0/14",
-        "108.162.192.0/18",
-        "131.0.72.0/22",
-        "141.101.64.0/18",
-        "162.158.0.0/15",
-        "172.64.0.0/13",
-        "173.245.48.0/20",
-        "188.114.96.0/20",
-        "190.93.240.0/20",
-        "197.234.240.0/22",
-        "198.41.128.0/17",
-        "2400:cb00::/32",
-        "2606:4700::/32",
-        "2803:f800::/32",
-        "2405:b500::/32",
-        "2405:8100::/32",
-        "2a06:98c0::/29",
-        "2c0f:f248::/32",
-    ];
+    // IP 주소 파싱 검증
+    let addr = match IpAddr::from_str(ip) {
+        Ok(addr) => addr,
+        Err(_) => return false,
+    };
 
-    match IpAddr::from_str(ip) {
-        Ok(addr) => CF_NETWORKS.iter().any(|network| {
+    // 캐시된 Cloudflare 네트워크 범위 가져오기
+    let networks = CLOUDFLARE_NETWORKS.read().await;
+
+    // 캐시가 비어있으면 기본 범위 사용 (fallback)
+    if networks.is_empty() {
+        warn!("⚠️ Cloudflare networks cache is empty, using fallback ranges");
+        let fallback_networks = vec![
+            "103.21.244.0/22",
+            "103.22.200.0/22",
+            "103.31.4.0/22",
+            "104.16.0.0/13",
+            "104.24.0.0/14",
+            "108.162.192.0/18",
+            "131.0.72.0/22",
+            "141.101.64.0/18",
+            "162.158.0.0/15",
+            "172.64.0.0/13",
+            "173.245.48.0/20",
+            "188.114.96.0/20",
+            "190.93.240.0/20",
+            "197.234.240.0/22",
+            "198.41.128.0/17",
+            "2400:cb00::/32",
+            "2606:4700::/32",
+            "2803:f800::/32",
+            "2405:b500::/32",
+            "2405:8100::/32",
+            "2a06:98c0::/29",
+            "2c0f:f248::/32",
+        ];
+
+        return fallback_networks.iter().any(|network| {
             if let Ok(net) = IpNet::from_str(network) {
                 net.contains(&addr)
             } else {
                 false
             }
-        }),
-        Err(_) => false,
+        });
     }
+
+    // 캐시된 범위에서 검사
+    networks.iter().any(|network| {
+        if let Ok(net) = IpNet::from_str(network) {
+            net.contains(&addr)
+        } else {
+            debug!("⚠️ Invalid network range in cache: {}", network);
+            false
+        }
+    })
 }
 
 // Cloudflare 패치 필요 여부 체크
@@ -377,7 +540,7 @@ pub async fn patch_cloudflare_response(
         });
 
     if let Some(ip) = first_ip {
-        if is_cloudflare_ip(&ip) {
+        if is_cloudflare_ip(&ip).await {
             debug!("🔧 Detected Cloudflare IP: {}, patching to alternative", ip);
 
             // 대체 도메인 목록 (kali.download 외 추가 옵션)
