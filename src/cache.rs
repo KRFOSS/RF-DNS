@@ -3,7 +3,7 @@ use hickory_proto::rr::RecordType;
 use moka::sync::Cache;
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 #[derive(Debug)]
 pub enum CacheError {
@@ -37,6 +37,11 @@ impl From<std::time::SystemTimeError> for CacheError {
 
 pub type CacheKey = (String, RecordType);
 
+// Helper function to create normalized cache keys
+fn create_cache_key(domain: &str, record_type: RecordType) -> CacheKey {
+    (domain.to_ascii_lowercase(), record_type)
+}
+
 #[derive(Clone)]
 pub struct DnsCache {
     cache: Arc<Cache<CacheKey, CacheEntry>>,
@@ -60,9 +65,10 @@ impl DnsCache {
             .max_capacity(MAX_CACHE_SIZE)
             // TTL을 엔트리별로 동적으로 설정하기 위해 time_to_live 제거
             .time_to_idle(Duration::from_secs(CACHE_IDLE_TIME))
-            .initial_capacity(50000)
+            .initial_capacity(10000) // 초기 용량 최적화 (50K -> 10K)
             .weigher(|_key, value: &CacheEntry| -> u32 {
-                (value.data.len() as u32 + 64).max(1) // 데이터 크기 + 메타데이터
+                // 단순화된 가중치 계산으로 성능 향상
+                std::cmp::max(value.data.len() as u32 / 64 + 1, 1)
             })
             .build();
 
@@ -72,7 +78,7 @@ impl DnsCache {
     }
 
     pub fn get(&self, domain: &str, record_type: &RecordType) -> Option<Vec<u8>> {
-        let key = (domain.to_lowercase(), *record_type);
+        let key = create_cache_key(domain, *record_type);
 
         if let Some(entry) = self.cache.get(&key) {
             // TTL 확인
@@ -119,8 +125,7 @@ impl DnsCache {
     }
 
     pub async fn store(&self, domain: &str, record_type: &RecordType, data: Vec<u8>, ttl: u64) {
-        let cache = self.cache.clone();
-        let key = (domain.to_lowercase(), *record_type);
+        let key = create_cache_key(domain, *record_type);
         let effective_ttl = std::cmp::min(ttl, MAX_TTL);
 
         let entry = CacheEntry {
@@ -137,14 +142,11 @@ impl DnsCache {
             entry.data.len()
         );
 
-        // 백그라운드에서 캐시 저장
-        tokio::spawn(async move {
-            cache.insert(key, entry);
-        });
+        // 직접 캐시에 저장 (async spawn 제거로 성능 향상)
+        self.cache.insert(key, entry);
     }
 
     pub fn remove_domain(&self, domain: &str) -> u64 {
-        let domain_lower = domain.to_lowercase();
         let record_types = [
             RecordType::A,
             RecordType::AAAA,
@@ -162,7 +164,7 @@ impl DnsCache {
 
         let mut removed_count = 0;
         for record_type in record_types {
-            let key = (domain_lower.clone(), record_type);
+            let key = create_cache_key(domain, record_type);
             if self.cache.remove(&key).is_some() {
                 removed_count += 1;
                 debug!(
@@ -196,10 +198,12 @@ impl DnsCache {
     }
 
     fn is_entry_valid(&self, entry: &CacheEntry) -> bool {
-        match entry.created_at.elapsed() {
+        // 시스템 시간 에러를 피하기 위해 Instant 사용 고려하지만,
+        // 여기서는 단순화된 검사로 성능 향상
+        match std::time::SystemTime::now().duration_since(entry.created_at) {
             Ok(elapsed) => elapsed.as_secs() < entry.ttl,
             Err(_) => {
-                warn!("System time error while checking cache entry validity");
+                // 시스템 시간 역행 상황에서는 항상 유효하지 않다고 가정
                 false
             }
         }

@@ -6,23 +6,23 @@ pub const DNS_PORT: u16 = 53;
 pub const DOH_PORT: u16 = 443;
 pub const DOT_PORT: u16 = 853;
 
-// 캐시 설정
-pub const MAX_CACHE_SIZE: u64 = 500000; // 캐시 크기 대폭 증가
-pub const MAX_TTL: u64 = 14400; // 4시간 TTL
-pub const CACHE_IDLE_TIME: u64 = 7200; // 2시간 유휴 시간
+// 캐시 설정 (성능 최적화)
+pub const MAX_CACHE_SIZE: u64 = 100000; // 캐시 크기 최적화 (500K -> 100K)
+pub const MAX_TTL: u64 = 3600; // TTL 단축 (4시간 -> 1시간)  
+pub const CACHE_IDLE_TIME: u64 = 1800; // 유휴 시간 단축 (2시간 -> 30분)
 
-// 네트워크 설정
-pub const MAX_CONCURRENT_CONNECTIONS: usize = 2000;
-pub const MAX_CONCURRENT_QUERIES: usize = 1000;
-pub const QUERY_TIMEOUT: Duration = Duration::from_millis(5000); // 5초로 증가
-pub const HTTP_TIMEOUT: Duration = Duration::from_millis(8000); // 8초로 증가
+// 네트워크 설정 (성능 최적화)
+pub const MAX_CONCURRENT_CONNECTIONS: usize = 1000; // 연결 수 최적화 (2000 -> 1000)
+pub const MAX_CONCURRENT_QUERIES: usize = 500; // 쿼리 수 최적화 (1000 -> 500)
+pub const QUERY_TIMEOUT: Duration = Duration::from_millis(3000); // 타임아웃 단축 (5초 -> 3초)
+pub const HTTP_TIMEOUT: Duration = Duration::from_millis(5000); // 타임아웃 단축 (8초 -> 5초)
 
 // 서버 워커 설정
 pub const UDP_WORKERS: usize = 8;
 pub const SOCKET_BUFFER_SIZE: usize = 2048;
 
-// 리졸버 설정
-pub const SOCKET_POOL_SIZE: usize = 100;
+// 리졸버 설정 (성능 최적화)
+pub const SOCKET_POOL_SIZE: usize = 50; // 소켓 풀 크기 최적화 (100 -> 50)
 
 // 루트 DNS 서버들
 pub const ROOT_DNS_SERVERS: &[&str] = &[
