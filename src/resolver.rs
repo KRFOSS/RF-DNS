@@ -2,6 +2,7 @@ use crate::config::*;
 use crate::errors::*;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{Name, RecordType};
+use once_cell::sync::Lazy;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -10,6 +11,39 @@ use tokio::net::UdpSocket;
 use tokio::sync::{RwLock, Semaphore};
 use tokio::time::timeout;
 use tracing::{debug, error, info, warn};
+
+// 버퍼 풀을 위한 간단한 구조체
+struct BufferPool {
+    buffers: RwLock<Vec<Vec<u8>>>,
+}
+
+impl BufferPool {
+    fn new() -> Self {
+        Self {
+            buffers: RwLock::new(Vec::new()),
+        }
+    }
+
+    async fn get_buffer(&self, size: usize) -> Vec<u8> {
+        let mut pool = self.buffers.write().await;
+        if let Some(mut buffer) = pool.pop() {
+            buffer.clear();
+            buffer.resize(size, 0);
+            buffer
+        } else {
+            vec![0u8; size]
+        }
+    }
+
+    async fn return_buffer(&self, buffer: Vec<u8>) {
+        let mut pool = self.buffers.write().await;
+        if pool.len() < 50 { // 최대 50개 버퍼만 풀에 보관
+            pool.push(buffer);
+        }
+    }
+}
+
+static BUFFER_POOL: Lazy<BufferPool> = Lazy::new(|| BufferPool::new());
 
 pub struct DnsResolver {
     dns_servers: Vec<SocketAddr>,
@@ -219,11 +253,13 @@ impl DnsResolver {
         // UDP는 연결이 필요 없음, 직접 send_to 사용
         socket.send_to(&query_bytes, server).await?;
 
-        let mut buffer = vec![0u8; SOCKET_BUFFER_SIZE];
+        // 버퍼 풀에서 버퍼 가져오기
+        let mut buffer = BUFFER_POOL.get_buffer(SOCKET_BUFFER_SIZE).await;
         let (len, received_addr) = socket.recv_from(&mut buffer).await?;
 
         // 응답이 올바른 서버에서 온 것인지 확인
         if received_addr.ip() != server.ip() {
+            BUFFER_POOL.return_buffer(buffer).await;
             return Err(DnsError::NetworkError(format!(
                 "Response from unexpected address: expected {}, got {}",
                 server.ip(),
@@ -236,6 +272,9 @@ impl DnsResolver {
         self.return_socket(socket).await;
 
         let response = Message::from_vec(&buffer)?;
+
+        // 버퍼를 풀에 반환
+        BUFFER_POOL.return_buffer(buffer).await;
 
         // 응답의 유효성 검증
         if response.id() != query.id() {
@@ -259,15 +298,23 @@ impl DnsResolver {
     }
 
     async fn get_socket(&self) -> DnsResult<UdpSocket> {
-        let mut pool = self.socket_pool.write().await;
-        if let Some(socket) = pool.pop() {
-            Ok(socket)
+        // 먼저 읽기 락으로 빠르게 확인
+        let pool_reader = self.socket_pool.read().await;
+        if !pool_reader.is_empty() {
+            drop(pool_reader);
+            // 쓰기 락으로 실제 소켓 가져오기
+            let mut pool = self.socket_pool.write().await;
+            if let Some(socket) = pool.pop() {
+                return Ok(socket);
+            }
         } else {
-            drop(pool);
-            UdpSocket::bind("0.0.0.0:0")
-                .await
-                .map_err(|e| DnsError::NetworkError(format!("Failed to create socket: {}", e)))
+            drop(pool_reader);
         }
+
+        // 풀이 비어있으면 새 소켓 생성 (락 없이)
+        UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(|e| DnsError::NetworkError(format!("Failed to create socket: {}", e)))
     }
 
     async fn return_socket(&self, socket: UdpSocket) {

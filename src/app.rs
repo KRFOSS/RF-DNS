@@ -4,7 +4,7 @@ use axum::{
     Router,
     extract::{Path, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Json},
     routing::{delete, get, post},
 };
 
@@ -70,12 +70,7 @@ async fn health_handler() -> impl IntoResponse {
 /// `Response` - JSON 형태의 메트릭 데이터
 async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
     let metrics = state.get_metrics();
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(metrics.to_string()))
-        .unwrap()
+    Json(metrics)
 }
 
 /// 캐시 통계 조회 핸들러 (`/cache/stats`)
@@ -90,12 +85,7 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
 /// `Response` - JSON 형태의 캐시 통계 데이터
 async fn cache_stats_handler(State(state): State<AppState>) -> impl IntoResponse {
     let stats = state.get_cache_stats();
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(stats.to_string()))
-        .unwrap()
+    Json(stats)
 }
 
 /// 전체 캐시 삭제 핸들러 (`/cache/clear`)
@@ -116,11 +106,7 @@ async fn clear_cache_handler(State(state): State<AppState>) -> impl IntoResponse
         "message": "All cache entries cleared"
     });
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(response.to_string()))
-        .unwrap()
+    Json(response)
 }
 
 /// 특정 도메인 캐시 삭제 핸들러 (`/cache/domain/{domain}`)
@@ -146,11 +132,7 @@ async fn clear_domain_cache_handler(
         "removed_entries": removed_count
     });
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(response.to_string()))
-        .unwrap()
+    Json(response)
 }
 
 /// Cloudflare IP 범위 업데이트 핸들러 (`/update/cloudflare`)
@@ -183,12 +165,7 @@ async fn update_cloudflare_handler() -> impl IntoResponse {
             });
 
             info!("✅ Manual Cloudflare IP ranges update completed successfully");
-
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(response.to_string()))
-                .unwrap()
+            (StatusCode::OK, Json(response)).into_response()
         }
         Err(e) => {
             error!("❌ Manual Cloudflare IP ranges update failed: {}", e);
@@ -202,11 +179,7 @@ async fn update_cloudflare_handler() -> impl IntoResponse {
                     .as_secs()
             });
 
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header("content-type", "application/json")
-                .body(axum::body::Body::from(response.to_string()))
-                .unwrap()
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(response)).into_response()
         }
     }
 }
@@ -243,11 +216,7 @@ async fn cloudflare_info_handler() -> impl IntoResponse {
             .as_secs()
     });
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .body(axum::body::Body::from(response.to_string()))
-        .unwrap()
+    Json(response)
 }
 
 /// DNS over HTTPS 메타데이터 핸들러 (`/.well-known/doh`)
@@ -268,10 +237,8 @@ async fn doh_metadata_handler() -> impl IntoResponse {
         "formats": ["dns-message"]
     });
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/json")
-        .header("cache-control", "public, max-age=86400")
-        .body(axum::body::Body::from(metadata.to_string()))
-        .unwrap()
+    (
+        [("cache-control", "public, max-age=86400")],
+        Json(metadata),
+    )
 }

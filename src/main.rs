@@ -1,5 +1,5 @@
 mod app;
-mod cache;
+pub mod cache;
 mod config;
 mod doh;
 mod dot;
@@ -135,38 +135,13 @@ async fn main() -> DnsResult<()> {
 
     // Cloudflare IP 범위 정기 업데이트 태스크 (매일 오전 1시)
     let cloudflare_update_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60)); // 24시간마다
+        interval.tick().await; // 첫 번째 tick은 즉시 실행되므로 건너뛰기
+        
         loop {
-            // 현재 시간 가져오기
-            let now = std::time::SystemTime::now();
-            let now_unix = now.duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-
-            // 현재 UTC 시간에서 오늘/내일 오전 1시 UTC 계산
-            let seconds_in_day = 24 * 60 * 60;
-            let current_day_start = (now_unix / seconds_in_day) * seconds_in_day;
-            let next_1am_utc = current_day_start + (1 * 60 * 60); // 오늘 오전 1시 UTC
-
-            let next_update_time = if now_unix < next_1am_utc {
-                next_1am_utc // 오늘 오전 1시
-            } else {
-                next_1am_utc + seconds_in_day // 내일 오전 1시
-            };
-
-            let wait_duration = std::time::Duration::from_secs(
-                next_update_time.saturating_sub(now_unix).max(60), // 최소 1분 대기
-            );
-
-            // 다음 업데이트 시간 로그 (단순한 형태로)
-            let hours_until = wait_duration.as_secs() / 3600;
-            let minutes_until = (wait_duration.as_secs() % 3600) / 60;
-            info!(
-                "⏰ Next Cloudflare IP update in {}h {}m (daily 1 AM UTC)",
-                hours_until, minutes_until
-            );
-
-            // 다음 업데이트 시간까지 대기
-            tokio::time::sleep(wait_duration).await;
-
-            info!("🔄 Starting scheduled Cloudflare IP ranges update (daily 1 AM UTC)...");
+            interval.tick().await;
+            
+            info!("🔄 Starting scheduled Cloudflare IP ranges update (daily)...");
             if let Err(e) = utils::update_cloudflare_networks().await {
                 tracing::warn!(
                     "⚠️ Failed to update Cloudflare networks during scheduled update: {}",
