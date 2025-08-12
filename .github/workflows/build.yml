@@ -12,14 +12,14 @@ env:
 jobs:
   build:
     strategy:
-      fail-fast: false
       matrix:
         include:
-          # 원하는 타겟을 여기에 자유롭게 추가하세요
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            arch: arm64
 
     runs-on: ${{ matrix.os }}
 
@@ -34,17 +34,16 @@ jobs:
       - name: Cache cargo build
         uses: actions/cache@v4
         with:
-          path: |
-            target
+          path: target
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-build-
 
-      - name: Install MUSL tools (for musl targets)
-        if: contains(matrix.target, 'musl')
+      - name: Install musl tools
         run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
+          sudo apt update -y
+          sudo apt upgrade -y
+          sudo apt install -y musl-tools
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
@@ -52,15 +51,13 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rfdns-${{ matrix.target }}
+          name: rfdns-${{ matrix.arch }}
           path: target/${{ matrix.target }}/release/rfdns
 
   release:
     needs: build
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/latest'
-    permissions:
-      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -85,16 +82,22 @@ jobs:
           draft: false
           prerelease: false
 
-
-      - name: Upload Release Assets (all targets)
+      - name: Upload AMD64 Release Asset
+        uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          shopt -s nullglob
-          for file in artifacts/*/rfdns; do
-            base=$(basename "$(dirname "$file")")
-            echo "Uploading $file as $base"
-            gh release upload "${{ steps.vars.outputs.sha }}" "$file" --clobber --name "$base"
-          done
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/rfdns-amd64/rfdns
+          asset_name: rfdns-x86_64
+          asset_content_type: application/octet-stream
+
+      - name: Upload ARM64 Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/rfdns-arm64/rfdns
+          asset_name: rfdns-aarch64
+          asset_content_type: application/octet-stream
