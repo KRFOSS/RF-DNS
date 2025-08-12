@@ -131,12 +131,12 @@ async fn dns_query_post_handler(
     validate_dns_headers(&headers)?;
 
     // 요청 본문 크기 검증
-    if body.len() > crate::config::MAX_DNS_MESSAGE_SIZE {
+    if body.len() > crate::config::get().security.max_dns_message_size {
         error!("🚨 DNS POST body too large: {} bytes", body.len());
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    if body.len() < crate::config::MIN_DNS_MESSAGE_SIZE {
+    if body.len() < crate::config::get().security.min_dns_message_size {
         error!("🚨 DNS POST body too small: {} bytes", body.len());
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -180,12 +180,12 @@ async fn dns_query_upstream_post_handler(
     validate_dns_headers(&headers)?;
 
     // 요청 본문 크기 검증
-    if body.len() > crate::config::MAX_DNS_MESSAGE_SIZE {
+    if body.len() > crate::config::get().security.max_dns_message_size {
         error!("🚨 DNS upstream POST body too large: {} bytes", body.len());
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    if body.len() < crate::config::MIN_DNS_MESSAGE_SIZE {
+    if body.len() < crate::config::get().security.min_dns_message_size {
         error!("🚨 DNS upstream POST body too small: {} bytes", body.len());
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -229,7 +229,7 @@ fn decode_base64_dns_query(query_b64: &str) -> Result<Vec<u8>, StatusCode> {
     }
 
     // 1. 길이 검증 (base64로 인코딩된 DNS 메시지 최대 크기)
-    if query_b64.len() > crate::config::MAX_BASE64_QUERY_LENGTH {
+    if query_b64.len() > crate::config::get().security.max_base64_query_length {
         error!("🚨 Base64 query too long: {} characters", query_b64.len());
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -265,12 +265,12 @@ fn decode_base64_dns_query(query_b64: &str) -> Result<Vec<u8>, StatusCode> {
     debug!("🔍 Decoded DNS message: {} bytes", decoded.len());
 
     // 3. 디코딩된 데이터 크기 검증
-    if decoded.len() < crate::config::MIN_DNS_MESSAGE_SIZE {
+    if decoded.len() < crate::config::get().security.min_dns_message_size {
         error!("🚨 DNS query too short: {} bytes", decoded.len());
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    if decoded.len() > crate::config::MAX_DNS_MESSAGE_SIZE {
+    if decoded.len() > crate::config::get().security.max_dns_message_size {
         error!("🚨 DNS query too long: {} bytes", decoded.len());
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -303,11 +303,11 @@ fn validate_dns_headers(headers: &HeaderMap) -> Result<(), StatusCode> {
     if let Some(content_length) = headers.get("content-length") {
         if let Ok(length_str) = content_length.to_str() {
             if let Ok(length) = length_str.parse::<usize>() {
-                if length > crate::config::MAX_DNS_MESSAGE_SIZE {
+                if length > crate::config::get().security.max_dns_message_size {
                     error!("🚨 DNS message too large: {} bytes", length);
                     return Err(StatusCode::PAYLOAD_TOO_LARGE);
                 }
-                if length < crate::config::MIN_DNS_MESSAGE_SIZE {
+                if length < crate::config::get().security.min_dns_message_size {
                     error!("🚨 DNS message too small: {} bytes", length);
                     return Err(StatusCode::BAD_REQUEST);
                 }

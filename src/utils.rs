@@ -1,4 +1,4 @@
-use crate::config::*;
+use crate::config;
 use crate::errors::*;
 use crate::state::AppState;
 use hickory_proto::op::Message;
@@ -16,7 +16,7 @@ use tracing::{debug, error, info, warn};
 pub static HTTP_CLIENT: Lazy<Arc<Client>> = Lazy::new(|| {
     Arc::new(
         Client::builder()
-            .timeout(HTTP_TIMEOUT)
+            .timeout(config::http_timeout())
             .connect_timeout(Duration::from_millis(1000))
             .pool_idle_timeout(Duration::from_secs(90))
             .pool_max_idle_per_host(50)
@@ -28,7 +28,7 @@ pub static HTTP_CLIENT: Lazy<Arc<Client>> = Lazy::new(|| {
 
 // 우회 도메인 목록
 pub static BYPASS_DOMAINS_SET: Lazy<HashSet<String>> =
-    Lazy::new(|| BYPASS_DOMAINS.iter().map(|s| s.to_string()).collect());
+    Lazy::new(|| config::get().bypass_domains.iter().cloned().collect());
 
 // Cloudflare IP 범위 캐시 (동적으로 로드)
 static CLOUDFLARE_NETWORKS: Lazy<Arc<RwLock<Vec<String>>>> =
@@ -187,11 +187,11 @@ pub fn should_bypass_domain(domain: &str) -> bool {
 // 도메인명 보안 검증 함수
 pub fn validate_domain_security(domain: &str) -> DnsResult<()> {
     // 1. 길이 검증 (RFC 1035: 최대 253자)
-    if domain.len() > MAX_DOMAIN_LENGTH {
+    if domain.len() > config::get().security.max_domain_length {
         error!(
             "🚨 Domain name too long: {} characters (max: {})",
             domain.len(),
-            MAX_DOMAIN_LENGTH
+            config::get().security.max_domain_length
         );
         return Err(DnsError::InvalidQuery(format!(
             "Domain name too long: {} characters",
@@ -207,12 +207,12 @@ pub fn validate_domain_security(domain: &str) -> DnsResult<()> {
 
     // 3. 라벨 길이 검증 (각 라벨은 최대 63자)
     for label in domain.split('.') {
-        if label.len() > MAX_LABEL_LENGTH {
+        if label.len() > config::get().security.max_label_length {
             error!(
                 "🚨 Domain label too long: '{}' ({} characters, max: {})",
                 label,
                 label.len(),
-                MAX_LABEL_LENGTH
+                config::get().security.max_label_length
             );
             return Err(DnsError::InvalidQuery(format!(
                 "Domain label too long: {} characters",
@@ -302,7 +302,7 @@ pub fn validate_domain_security(domain: &str) -> DnsResult<()> {
 
 // TTL 추출
 pub fn extract_ttl_from_response(response: &Message) -> u64 {
-    let mut min_ttl = MAX_TTL;
+    let mut min_ttl = config::get().cache.max_ttl;
 
     for record in response.answers() {
         min_ttl = min_ttl.min(record.ttl() as u64);
@@ -623,7 +623,7 @@ pub async fn patch_cloudflare_response(
 pub fn setup_logging() {
     use tracing_subscriber::prelude::*;
 
-    let log_level = match LOG_LEVEL {
+    let log_level = match config::get().logging.level.as_str() {
         "error" => tracing::Level::ERROR,
         "warn" => tracing::Level::WARN,
         "info" => tracing::Level::INFO,
@@ -644,5 +644,8 @@ pub fn setup_logging() {
         ))
         .init();
 
-    tracing::info!("📝 Logging initialized with level: {}", LOG_LEVEL);
+    tracing::info!(
+        "📝 Logging initialized with level: {}",
+        config::get().logging.level
+    );
 }

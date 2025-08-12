@@ -1,4 +1,4 @@
-use crate::config::*;
+use crate::config;
 use hickory_proto::rr::RecordType;
 use moka::sync::Cache;
 use std::sync::Arc;
@@ -58,13 +58,14 @@ impl DnsCache {
     pub fn new() -> Self {
         info!(
             "🗄️ Initializing DNS cache with max_capacity={} and max_ttl={}s",
-            MAX_CACHE_SIZE, MAX_TTL
+            config::get().cache.max_size,
+            config::get().cache.max_ttl
         );
 
         let cache = Cache::builder()
-            .max_capacity(MAX_CACHE_SIZE)
+            .max_capacity(config::get().cache.max_size)
             // TTL을 엔트리별로 동적으로 설정하기 위해 time_to_live 제거
-            .time_to_idle(Duration::from_secs(CACHE_IDLE_TIME))
+            .time_to_idle(Duration::from_secs(config::get().cache.idle_time))
             .initial_capacity(10000) // 초기 용량 최적화 (50K -> 10K)
             .weigher(|_key, value: &CacheEntry| -> u32 {
                 // 단순화된 가중치 계산으로 성능 향상
@@ -126,7 +127,7 @@ impl DnsCache {
 
     pub async fn store(&self, domain: &str, record_type: &RecordType, data: Vec<u8>, ttl: u64) {
         let key = create_cache_key(domain, *record_type);
-        let effective_ttl = std::cmp::min(ttl, MAX_TTL);
+        let effective_ttl = std::cmp::min(ttl, config::get().cache.max_ttl);
 
         let entry = CacheEntry {
             data,
@@ -191,9 +192,9 @@ impl DnsCache {
         serde_json::json!({
             "entries": entry_count,
             "size_bytes": weighted_size,
-            "max_capacity": MAX_CACHE_SIZE,
-            "max_ttl_seconds": MAX_TTL,
-            "idle_timeout_seconds": CACHE_IDLE_TIME,
+            "max_capacity": config::get().cache.max_size,
+            "max_ttl_seconds": config::get().cache.max_ttl,
+            "idle_timeout_seconds": config::get().cache.idle_time,
         })
     }
 
@@ -235,7 +236,7 @@ impl std::fmt::Debug for DnsCache {
         f.debug_struct("DnsCache")
             .field("entries", &entries)
             .field("size_bytes", &size)
-            .field("max_capacity", &MAX_CACHE_SIZE)
+            .field("max_capacity", &config::get().cache.max_size)
             .finish()
     }
 }

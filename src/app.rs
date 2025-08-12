@@ -237,8 +237,5 @@ async fn doh_metadata_handler() -> impl IntoResponse {
         "formats": ["dns-message"]
     });
 
-    (
-        [("cache-control", "public, max-age=86400")],
-        Json(metadata),
-    )
+    ([("cache-control", "public, max-age=86400")], Json(metadata))
 }

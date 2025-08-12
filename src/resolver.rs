@@ -1,4 +1,4 @@
-use crate::config::*;
+// use crate::config; // access via crate::config
 use crate::errors::*;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::{Name, RecordType};
@@ -37,7 +37,8 @@ impl BufferPool {
 
     async fn return_buffer(&self, buffer: Vec<u8>) {
         let mut pool = self.buffers.write().await;
-        if pool.len() < 50 { // 최대 50개 버퍼만 풀에 보관
+        if pool.len() < 50 {
+            // 최대 50개 버퍼만 풀에 보관
             pool.push(buffer);
         }
     }
@@ -54,7 +55,8 @@ pub struct DnsResolver {
 
 impl DnsResolver {
     pub fn new() -> DnsResult<Self> {
-        let dns_servers: Vec<SocketAddr> = ROOT_DNS_SERVERS
+        let dns_servers: Vec<SocketAddr> = crate::config::get()
+            .root_dns_servers
             .iter()
             .map(|ip| SocketAddr::new(ip.parse().unwrap(), 53))
             .collect();
@@ -67,7 +69,9 @@ impl DnsResolver {
         let resolver = Self {
             dns_servers,
             socket_pool: Arc::new(RwLock::new(Vec::new())),
-            query_semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT_QUERIES)),
+            query_semaphore: Arc::new(Semaphore::new(
+                crate::config::get().network.max_concurrent_queries,
+            )),
             active_queries: Arc::new(AtomicUsize::new(0)),
         };
 
@@ -158,7 +162,7 @@ impl DnsResolver {
             let future = async move {
                 let query_future = self.query_server_optimized(server, &name, record_type);
                 tokio::select! {
-                    result = timeout(QUERY_TIMEOUT, query_future) => {
+                    result = timeout(crate::config::query_timeout(), query_future) => {
                         match result {
                             Ok(Ok(response)) => {
                                 debug!("✅ Got response from {}: rcode={:?}", server, response.response_code());
@@ -254,7 +258,9 @@ impl DnsResolver {
         socket.send_to(&query_bytes, server).await?;
 
         // 버퍼 풀에서 버퍼 가져오기
-        let mut buffer = BUFFER_POOL.get_buffer(SOCKET_BUFFER_SIZE).await;
+        let mut buffer = BUFFER_POOL
+            .get_buffer(crate::config::get().network.socket_buffer_size)
+            .await;
         let (len, received_addr) = socket.recv_from(&mut buffer).await?;
 
         // 응답이 올바른 서버에서 온 것인지 확인
@@ -319,7 +325,7 @@ impl DnsResolver {
 
     async fn return_socket(&self, socket: UdpSocket) {
         let mut pool = self.socket_pool.write().await;
-        if pool.len() < SOCKET_POOL_SIZE {
+        if pool.len() < crate::config::get().network.socket_pool_size {
             pool.push(socket);
         }
     }

@@ -187,7 +187,7 @@ impl Metrics {
     pub fn start_periodic_logging(&self) {
         let metrics = self.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(crate::config::STATS_INTERVAL);
+            let mut interval = tokio::time::interval(crate::config::stats_interval());
             loop {
                 interval.tick().await;
                 metrics.log_stats();

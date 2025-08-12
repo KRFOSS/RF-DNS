@@ -1,4 +1,4 @@
-use crate::config::*;
+use crate::config;
 use crate::errors::*;
 use crate::metrics::Protocol;
 use crate::state::AppState;
@@ -21,7 +21,9 @@ impl UdpDnsServer {
     pub fn new(state: AppState) -> Self {
         Self {
             state,
-            connection_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS)),
+            connection_limiter: Arc::new(Semaphore::new(
+                config::get().network.max_concurrent_connections,
+            )),
             active_connections: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -34,7 +36,7 @@ impl UdpDnsServer {
 
         // 워커 스레드 생성
         let mut tasks = Vec::new();
-        for worker_id in 0..UDP_WORKERS {
+        for worker_id in 0..crate::config::get().network.udp_workers {
             let socket = socket.clone();
             let state = self.state.clone();
             let connection_limiter = self.connection_limiter.clone();
@@ -57,7 +59,7 @@ impl UdpDnsServer {
         // 통계 출력 태스크
         let active_connections = self.active_connections.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(STATS_INTERVAL);
+            let mut interval = tokio::time::interval(config::stats_interval());
             loop {
                 interval.tick().await;
                 debug!(
@@ -82,7 +84,7 @@ impl UdpDnsServer {
         connection_limiter: Arc<Semaphore>,
         active_connections: Arc<AtomicUsize>,
     ) {
-        let mut buffer = vec![0u8; SOCKET_BUFFER_SIZE];
+        let mut buffer = vec![0u8; crate::config::get().network.socket_buffer_size];
 
         loop {
             match socket.recv_from(&mut buffer).await {
@@ -183,7 +185,9 @@ impl TcpDnsServer {
     pub fn new(state: AppState) -> Self {
         Self {
             state,
-            connection_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS)),
+            connection_limiter: Arc::new(Semaphore::new(
+                crate::config::get().network.max_concurrent_connections,
+            )),
             active_connections: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -197,7 +201,7 @@ impl TcpDnsServer {
         // 통계 출력 태스크
         let active_connections = self.active_connections.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(STATS_INTERVAL);
+            let mut interval = tokio::time::interval(config::stats_interval());
             loop {
                 interval.tick().await;
                 debug!(
@@ -253,7 +257,7 @@ impl TcpDnsServer {
 
         debug!("📥 TCP connection from {}", addr);
 
-        let mut buffer = vec![0u8; SOCKET_BUFFER_SIZE];
+        let mut buffer = vec![0u8; config::get().network.socket_buffer_size];
 
         loop {
             // 길이 읽기 (2바이트)
@@ -264,7 +268,7 @@ impl TcpDnsServer {
             }
 
             let message_len = u16::from_be_bytes(len_bytes) as usize;
-            if message_len > SOCKET_BUFFER_SIZE {
+            if message_len > config::get().network.socket_buffer_size {
                 error!("❌ TCP message too large: {} bytes", message_len);
                 break;
             }

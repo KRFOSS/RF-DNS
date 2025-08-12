@@ -10,8 +10,9 @@ mod servers;
 mod state;
 mod utils;
 
+// use crate::config; // access via crate::config directly
 use clap::Parser;
-use config::*;
+#[cfg(unix)]
 use daemonize::Daemonize;
 use doh::run_doh_server;
 use dot::run_dot_server;
@@ -34,15 +35,15 @@ struct Args {
     key: Option<String>,
 
     /// DoH server port
-    #[arg(long, default_value_t = DOH_PORT, help = "Port for DNS over HTTPS server")]
+    #[arg(long, default_value_t = crate::config::DEFAULT_DOH_PORT, help = "Port for DNS over HTTPS server")]
     doh_port: u16,
 
     /// DoT server port
-    #[arg(long, default_value_t = DOT_PORT, help = "Port for DNS over TLS server")]
+    #[arg(long, default_value_t = crate::config::DEFAULT_DOT_PORT, help = "Port for DNS over TLS server")]
     dot_port: u16,
 
     /// Plain DNS server port
-    #[arg(long, default_value_t = DNS_PORT, help = "Port for plain DNS server")]
+    #[arg(long, default_value_t = crate::config::DEFAULT_DNS_PORT, help = "Port for plain DNS server")]
     dns_port: u16,
 
     /// TCP DNS server port
@@ -79,6 +80,7 @@ async fn main() -> DnsResult<()> {
     let args = Args::parse();
 
     // 데몬 모드 설정
+    #[cfg(unix)]
     if args.daemon {
         let pid_file = args.pid_file.as_deref().unwrap_or("/var/run/rfdns.pid");
 
@@ -104,7 +106,10 @@ async fn main() -> DnsResult<()> {
                 )));
             }
         }
-    } else {
+    }
+
+    // Windows 또는 daemon=false 공통 로깅 설정
+    if cfg!(not(unix)) || !args.daemon {
         // 로깅 설정
         setup_logging();
     }
@@ -137,10 +142,10 @@ async fn main() -> DnsResult<()> {
     let cloudflare_update_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60)); // 24시간마다
         interval.tick().await; // 첫 번째 tick은 즉시 실행되므로 건너뛰기
-        
+
         loop {
             interval.tick().await;
-            
+
             info!("🔄 Starting scheduled Cloudflare IP ranges update (daily)...");
             if let Err(e) = utils::update_cloudflare_networks().await {
                 tracing::warn!(
@@ -225,7 +230,7 @@ async fn main() -> DnsResult<()> {
     info!("🚀 All servers starting...");
     info!(
         "📊 Metrics and statistics will be displayed every {} seconds",
-        STATS_INTERVAL.as_secs()
+        config::stats_interval().as_secs()
     );
 
     // 서버 시작 완료 메시지
@@ -243,19 +248,37 @@ async fn main() -> DnsResult<()> {
 }
 
 async fn setup_shutdown_signal() {
-    use tokio::signal;
+    #[cfg(unix)]
+    {
+        use tokio::signal;
+        let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
+            .expect("Failed to install SIGINT handler");
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("Failed to install SIGTERM handler");
 
-    let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
-        .expect("Failed to install SIGINT handler");
-    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
-        .expect("Failed to install SIGTERM handler");
-
-    tokio::select! {
-        _ = sigint.recv() => {
-            info!("🛑 Received SIGINT");
+        tokio::select! {
+            _ = sigint.recv() => {
+                info!("🛑 Received SIGINT");
+            }
+            _ = sigterm.recv() => {
+                info!("🛑 Received SIGTERM");
+            }
         }
-        _ = sigterm.recv() => {
-            info!("🛑 Received SIGTERM");
+    }
+
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows::{ctrl_break, ctrl_c};
+        let mut c = ctrl_c().expect("Failed to install Ctrl+C handler");
+        let mut b = ctrl_break().expect("Failed to install Ctrl+Break handler");
+
+        tokio::select! {
+            _ = c.recv() => {
+                info!("🛑 Received Ctrl+C");
+            }
+            _ = b.recv() => {
+                info!("🛑 Received Ctrl+Break");
+            }
         }
     }
 }

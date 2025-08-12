@@ -1,0 +1,103 @@
+# RF-DNS configuration (sample)
+
+[ports]
+# UDP DNS
+dns = 53
+# DNS over HTTPS
+doh = 443
+# DNS over TLS
+dot = 853
+# TCP DNS
+tcp = 5353
+
+[cache]
+max_size = 100000
+max_ttl = 3600
+idle_time = 1800
+
+[network]
+max_concurrent_connections = 1000
+max_concurrent_queries = 500
+query_timeout_ms = 3000
+http_timeout_ms = 5000
+udp_workers = 8
+socket_buffer_size = 2048
+socket_pool_size = 50
+
+[logging]
+level = "info"
+stats_interval_sec = 300
+
+[servers]
+# Enable servers by default via CLI flags; keep false here as defaults
+enable_udp = false
+enable_tcp = false
+enable_doh = false
+enable_dot = false
+
+# list of root DNS servers
+root_dns_servers = [
+  "1.1.1.1",
+  "1.0.0.1",
+  "8.8.8.8",
+  "8.8.4.4",
+  "9.9.9.9",
+  "149.112.112.112",
+  "208.67.222.222",
+  "208.67.220.220",
+]
+
+# bypass domain list
+bypass_domains = [
+  "prod.api.letsencrypt.org",
+  "cloudflare.com",
+  "speed.cloudflare.com",
+  "shops.myshopify.com",
+  ".cdn.cloudflare.net",
+  ".pacloudflare.com",
+]
+
+# upstream presets
+[[upstream_presets]]
+name = "cloudflare"
+ip = "1.1.1.1"
+[[upstream_presets]]
+name = "cf"
+ip = "1.1.1.1"
+[[upstream_presets]]
+name = "google"
+ip = "8.8.8.8"
+[[upstream_presets]]
+name = "g"
+ip = "8.8.8.8"
+[[upstream_presets]]
+name = "quad9"
+ip = "9.9.9.9"
+[[upstream_presets]]
+name = "q9"
+ip = "9.9.9.9"
+[[upstream_presets]]
+name = "opendns"
+ip = "208.67.222.222"
+[[upstream_presets]]
+name = "od"
+ip = "208.67.222.222"
+[[upstream_presets]]
+name = "adguard"
+ip = "94.140.14.14"
+[[upstream_presets]]
+name = "ag"
+ip = "94.140.14.14"
+[[upstream_presets]]
+name = "eliv"
+ip = "150.230.255.179"
+[[upstream_presets]]
+name = "ei"
+ip = "150.230.255.179"
+
+[security]
+max_domain_length = 253
+max_label_length = 63
+max_dns_message_size = 4096
+min_dns_message_size = 12
+max_base64_query_length = 8192

@@ -1,5 +1,5 @@
 use crate::cache::DnsCache;
-use crate::config::*;
+// use crate::config; // use via module path
 use crate::errors::*;
 use crate::metrics::{Metrics, Protocol, ResponseTimer};
 use crate::resolver::DnsResolver;
@@ -214,7 +214,11 @@ impl AppState {
         let upstream_response = fetch_dns_from_upstream(
             &query_info.domain,
             &query_info.record_type,
-            ROOT_DNS_SERVERS[0], // 기본 업스트림 서버
+            crate::config::get()
+                .root_dns_servers
+                .get(0)
+                .map(|s| s.as_str())
+                .unwrap_or("1.1.1.1"), // 기본 업스트림 서버
         )
         .await;
 
@@ -329,9 +333,9 @@ impl AppState {
         let upstream_lower = upstream.to_lowercase();
 
         // 프리셋에서 검색
-        for (alias, ip) in UPSTREAM_PRESETS {
-            if upstream_lower == *alias {
-                return Ok(ip.to_string());
+        for preset in &crate::config::get().upstream_presets {
+            if upstream_lower == preset.name {
+                return Ok(preset.ip.clone());
             }
         }
 
@@ -342,7 +346,11 @@ impl AppState {
         {
             Ok(upstream.to_string())
         } else {
-            let preset_names: Vec<&str> = UPSTREAM_PRESETS.iter().map(|(name, _)| *name).collect();
+            let preset_names: Vec<String> = crate::config::get()
+                .upstream_presets
+                .iter()
+                .map(|p| p.name.clone())
+                .collect();
             Err(DnsError::ConfigurationError(format!(
                 "Unknown upstream server: {}. Available options: {}, or IP address/URL",
                 upstream,

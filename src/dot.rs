@@ -1,4 +1,4 @@
-use crate::config::*;
+// use crate::config; // used via module path
 use crate::errors::*;
 use crate::metrics::Protocol;
 use crate::state::AppState;
@@ -22,7 +22,9 @@ impl DoTServer {
     pub fn new(state: AppState) -> Self {
         Self {
             state,
-            connection_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS)),
+            connection_limiter: Arc::new(Semaphore::new(
+                crate::config::get().network.max_concurrent_connections,
+            )),
             active_connections: Arc::new(AtomicUsize::new(0)),
         }
     }
@@ -140,7 +142,7 @@ impl DoTServer {
     ) -> DnsResult<()> {
         debug!("📥 DoT connection from {}", addr);
 
-        let mut buffer = vec![0u8; SOCKET_BUFFER_SIZE];
+        let mut buffer = vec![0u8; crate::config::get().network.socket_buffer_size];
 
         loop {
             let mut len_bytes = [0u8; 2];
@@ -150,7 +152,7 @@ impl DoTServer {
             }
 
             let message_len = u16::from_be_bytes(len_bytes) as usize;
-            if message_len > SOCKET_BUFFER_SIZE {
+            if message_len > crate::config::get().network.socket_buffer_size {
                 error!("❌ DoT message too large: {} bytes", message_len);
                 break;
             }
