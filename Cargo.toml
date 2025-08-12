@@ -59,7 +59,7 @@ daemonize = "0.5"
 
 [profile.release]
 lto = "fat"
-codegen-units = 256
+codegen-units = 1
 panic = "abort"
 strip = true
 opt-level = 3
