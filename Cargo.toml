@@ -1,5 +1,5 @@
 [package]
-name = "rfdns"
+name = "rf-dns"
 version = "7.1.0"
 edition = "2024"
 

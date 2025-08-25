@@ -47,8 +47,8 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rf-proxy-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/release/rf-proxy
+          name: rf-dns-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/rf-dns
 
   release:
     needs: build
@@ -84,7 +84,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: artifacts/rf-proxy-amd64/rf-proxy
-          asset_name: rf-proxy-x86_64
+          asset_path: artifacts/rf-dns-amd64/rf-dns
+          asset_name: rf-dns-x86_64
           asset_content_type: application/octet-stream
           
