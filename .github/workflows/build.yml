@@ -16,7 +16,7 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            arch: amd64
+            arch: x86_64
             
     runs-on: ${{ matrix.os }}
 
@@ -78,13 +78,13 @@ jobs:
           draft: false
           prerelease: false
 
-      - name: Upload AMD64 Release Asset
+      - name: Upload x86_64 Release Asset
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: artifacts/rf-dns-amd64/rf-dns
+          asset_path: artifacts/rf-dns-x86_64/rf-dns
           asset_name: rf-dns-x86_64
           asset_content_type: application/octet-stream
           
