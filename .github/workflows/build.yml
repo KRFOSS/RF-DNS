@@ -39,7 +39,6 @@ jobs:
       - name: Install musl tools
         run: |
           sudo apt update -y
-          sudo apt upgrade -y
           sudo apt install -y musl-tools
 
       - name: Build
@@ -48,8 +47,8 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rfdns-${{ matrix.arch }}
-          path: target/${{ matrix.target }}/release/rfdns
+          name: rf-proxy-${{ matrix.arch }}
+          path: target/${{ matrix.target }}/release/rf-proxy
 
   release:
     needs: build
@@ -85,6 +84,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: artifacts/rfdns-amd64/rfdns
-          asset_name: rfdns-x86_64
+          asset_path: artifacts/rf-proxy-amd64/rf-proxy
+          asset_name: rf-proxy-x86_64
           asset_content_type: application/octet-stream
+          
