@@ -1677,8 +1677,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95325155c684b1c89f7765e30bc1c42e4a6da51ca513615660cb8a62ef9a88e3"
 
 [[package]]
-name = "rfdns"
-version = "7.1.0"
+name = "rf-dns"
+version = "7.2.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1702,7 +1702,7 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
- "socket2 0.5.10",
+ "socket2 0.6.0",
  "tokio",
  "tokio-rustls",
  "tokio-util",
